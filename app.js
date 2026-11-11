@@ -5,6 +5,7 @@
 
 import { MindARThree } from './lib/mindar/mindar-image-three.prod.js';
 import { CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
+import { Group, Quaternion, Euler, Vector3, MathUtils } from 'three';
 
 const AGENDA_TARGET = 0; // index of agenda_poster in targets.mind
 const POSTER_HEIGHT_PX = 1414; // poster height when its width is 1000px (A-series ratio)
@@ -62,6 +63,8 @@ let content = null;
 let mindar = null;
 let agendaRoot = null;
 let briefRoot = null;
+let agendaObj = null;
+let briefObj = null;
 let agendaVisible = false;
 let agendaClosed = false;
 let selectedSession = -1;
@@ -69,6 +72,20 @@ let currentSheet = null; // { kind, id }
 const huntVisible = new Set();
 const huntBadges = new Map();
 const discoveryCooldown = new Map();
+
+// "Place agenda here" (no poster): the agenda is pinned in the direction the phone pointed,
+// using the phone's motion sensors. It stays put when you turn, but does not get closer when you walk.
+let wallMode = false;
+let wallGroup = null;
+let wallHolder = null;
+let qNow = null;   // current phone orientation
+let qPlace = null; // phone orientation when the agenda was placed
+let orientationListening = false;
+let orientationAsked = false;
+const zAxis = new Vector3(0, 0, 1);
+const eulerTmp = new Euler();
+const qTmp = new Quaternion();
+const qScreenFix = new Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // camera looks out of the back of the phone
 
 // ---------------------------------------------------------------- start
 
@@ -122,7 +139,13 @@ async function start() {
   }
 
   const { renderer, cssRenderer, scene, cssScene, camera } = mindar;
+  wallGroup = new Group();
+  wallHolder = new Group();
+  wallGroup.add(wallHolder);
+  cssScene.add(wallGroup);
+
   renderer.setAnimationLoop(() => {
+    updateWall();
     renderer.render(scene, camera);
     cssRenderer.render(cssScene, camera);
   });
@@ -156,15 +179,76 @@ function buildAgendaAnchor() {
 
   briefRoot = el('div', { class: 'ar-panel ar-brief is-closed' });
 
-  const agendaObj = new CSS3DObject(agendaRoot);
-  const briefObj = new CSS3DObject(briefRoot);
+  agendaObj = new CSS3DObject(agendaRoot);
+  briefObj = new CSS3DObject(briefRoot);
   // 1000px = poster width. The brief sits to the right of the poster, top-aligned.
   briefObj.position.set(500 + 60 + 400, 0, 0);
   anchor.group.add(agendaObj);
   anchor.group.add(briefObj);
 
-  anchor.onTargetFound = () => { agendaVisible = true; updateChrome(); };
-  anchor.onTargetLost = () => { agendaVisible = false; updateChrome(); };
+  anchor.onTargetFound = () => { if (!wallMode) { agendaVisible = true; updateChrome(); } };
+  anchor.onTargetLost = () => { if (!wallMode) { agendaVisible = false; updateChrome(); } };
+}
+
+// ---------------------------------------------------------------- agenda on any wall (no poster)
+
+function onOrientation(e) {
+  if (e.alpha == null || e.beta == null || e.gamma == null) return;
+  const screenAngle = (screen.orientation && typeof screen.orientation.angle === 'number')
+    ? screen.orientation.angle : (window.orientation || 0);
+  eulerTmp.set(MathUtils.degToRad(e.beta), MathUtils.degToRad(e.alpha), -MathUtils.degToRad(e.gamma), 'YXZ');
+  if (!qNow) qNow = new Quaternion();
+  qNow.setFromEuler(eulerTmp);
+  qNow.multiply(qScreenFix);
+  qNow.multiply(qTmp.setFromAxisAngle(zAxis, -MathUtils.degToRad(screenAngle)));
+  // First reading after placing: pin the agenda where it is on screen right now.
+  if (wallMode && !qPlace) qPlace = qNow.clone();
+}
+
+function listenOrientation() {
+  if (orientationListening) return;
+  orientationListening = true;
+  window.addEventListener('deviceorientation', onOrientation);
+}
+
+function placeAgendaHere() {
+  // iPhone asks for motion access; the request must come straight from this tap.
+  const DOE = window.DeviceOrientationEvent;
+  if (DOE && typeof DOE.requestPermission === 'function' && !orientationAsked) {
+    orientationAsked = true;
+    DOE.requestPermission().catch(() => { /* no motion access: the agenda stays fixed on the screen */ });
+  }
+  listenOrientation(); // readings arrive once motion access is allowed
+
+  wallMode = true;
+  agendaVisible = true;
+  agendaClosed = false;
+  qPlace = qNow ? qNow.clone() : null;
+
+  // Size it so the agenda fills about 85% of the screen width, one "unit" in front of the camera.
+  const cam = mindar.camera;
+  const distance = Math.min(Math.max(1000, cam.near * 4), cam.far / 4);
+  const visibleWidth = 2 * distance * Math.tan(MathUtils.degToRad(cam.fov) / 2) * cam.aspect;
+  wallHolder.position.set(0, 0, -distance);
+  wallHolder.scale.setScalar((0.85 * visibleWidth) / 1000);
+
+  wallHolder.add(agendaObj); // moves the panels off the poster anchor
+  wallHolder.add(briefObj);
+  agendaRoot.style.visibility = 'visible';
+  briefRoot.style.visibility = 'visible';
+  agendaRoot.classList.remove('is-closed');
+  if (selectedSession >= 0) briefRoot.classList.remove('is-closed');
+  updateChrome();
+}
+
+function updateWall() {
+  if (!wallGroup) return;
+  if (wallMode && qNow && qPlace) {
+    // Turn the pinned agenda opposite to how the phone has turned since placing it.
+    wallGroup.quaternion.copy(qNow).invert().multiply(qPlace);
+  } else {
+    wallGroup.quaternion.identity();
+  }
 }
 
 function showBrief(index) {
@@ -338,7 +422,7 @@ function openLeaderboard() {
 // ---------------------------------------------------------------- directions (2D map + steps)
 
 function directionSteps(s) {
-  const steps = ['Stand with your back to the agenda poster.'];
+  const steps = [wallMode ? 'Stand with your back to the wall where you placed the agenda.' : 'Stand with your back to the agenda poster.'];
   if (s.ahead > 0) steps.push(`Walk about ${s.ahead} m straight ahead.`);
   if (s.side) steps.push(`${s.ahead > 0 ? 'Turn' : 'Go'} ${s.side > 0 ? 'right' : 'left'} and walk about ${Math.abs(s.side)} m.`);
   steps.push(`${s.room} is there.`);
@@ -428,8 +512,8 @@ function updateChrome() {
   let hint = null;
   if (!currentSheet && mindar) {
     if (agendaVisible && !agendaClosed && selectedSession < 0) hint = 'Tap a session to see its brief';
-    else if (agendaVisible && !agendaClosed && selectedSession >= 0) hint = 'The brief is to the right of the agenda \u2192';
-    else if (!agendaVisible && huntVisible.size === 0) hint = 'Point the camera at the agenda poster or a hunt object';
+    else if (agendaVisible && !agendaClosed && selectedSession >= 0) hint = wallMode ? 'The brief is to the right: turn the phone right \u2192' : 'The brief is to the right of the agenda \u2192';
+    else if (!agendaVisible && huntVisible.size === 0) hint = 'Point at the agenda poster, or at any wall and tap "Place agenda here"';
   }
   banner.hidden = hint === null;
   if (hint) banner.textContent = hint;
@@ -442,6 +526,7 @@ function updateChrome() {
 
 $('#btn-start').addEventListener('click', start);
 $('#btn-show-agenda').addEventListener('click', showAgenda);
+$('#btn-place').addEventListener('click', placeAgendaHere);
 $('#btn-hunt').addEventListener('click', openHunt);
 
 loadContent()
@@ -449,4 +534,4 @@ loadContent()
   .catch(() => { /* retried on Start */ });
 
 // Expose a small hook for automated testing.
-window.__ysf = { get state() { return { agendaVisible, agendaClosed, selectedSession, sheet: currentSheet, score: score(), found: foundMap() }; } };
+window.__ysf = { get state() { return { wallMode, placed: Boolean(qPlace), agendaVisible, agendaClosed, selectedSession, sheet: currentSheet, score: score(), found: foundMap() }; } };

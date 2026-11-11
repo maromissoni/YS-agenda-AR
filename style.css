@@ -38,7 +38,7 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
   bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
   display: flex; gap: 12px;
 }
-.bar button { flex: 1; min-height: 56px; border-radius: var(--radius); font-weight: 700; font-size: 17px; background: var(--panel); }
+.bar button { flex: 1; min-height: 56px; border-radius: var(--radius); font-weight: 700; font-size: 15px; line-height: 1.2; padding: 0 8px; background: var(--panel); }
 .bar button.primary { background: var(--ink); color: #fff; }
 
 /* Start / error screen */
@@ -87,8 +87,8 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 /* AR panels: sized in "poster pixels" - 1000px equals the width of the printed marker */
 .ar-panel { pointer-events: auto; font-family: var(--font); color: var(--ink); user-select: none; }
 .ar-agenda, .ar-brief {
-  height: 1414px; background: var(--panel); border: 8px solid var(--ink);
-  padding: 56px; display: flex; flex-direction: column; gap: 28px;
+  min-height: 1414px; background: var(--panel); border: 8px solid var(--ink);
+  padding: 52px; display: flex; flex-direction: column; gap: 24px;
 }
 .ar-agenda { width: 1000px; }
 .ar-brief { width: 800px; }

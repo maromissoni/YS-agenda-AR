@@ -6,6 +6,10 @@ Attendees scan a QR code, tap **Start**, allow the camera and point it at the ag
 Everything here is free: hosting (GitHub Pages), image tracking (MindAR, MIT licence) and 3D (three.js, MIT licence).
 The libraries are included in `lib/`, so the app does not depend on any outside service.
 
+## Already uploaded an older version?
+
+In your repository click **Add file → Upload files**, drag in the new `index.html`, `app.js`, `style.css` and `README.md`, and click **Commit changes**. Files with the same name are replaced. The link updates in a minute or two (reload the page on your phone).
+
 ## Put it online (about 10 minutes, free)
 
 1. Create a free account at **github.com**.
@@ -27,6 +31,14 @@ The link is not listed anywhere, so only people you send it to will find it. The
 4. Point at the Penkala card: the found panel opens. Claim the points, open the hunt list and the leaderboard.
 
 Make it feel like an app: **iPhone** Share → *Add to Home Screen*. **Android** Chrome menu → *Add to Home screen* / *Install app*.
+
+## No poster yet? Place the agenda on any wall
+
+After **Start**, point the phone at any wall and tap **Place agenda here**. The agenda appears in front of you and stays pinned in that direction as you turn the phone (iPhone asks for motion access the first time: tap **Allow**). Tap a session and turn the phone to the right to see the brief.
+
+It uses the phone's motion sensors, so it stays put when you turn but does not get closer when you walk. With the printed poster it is locked to the wall properly. Tap **Place agenda here** again to move it.
+
+For the hunt without printing, open a card image from `markers/` on a laptop or another phone and scan the screen.
 
 ## Change the content (no code)
 
