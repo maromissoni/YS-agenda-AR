@@ -1,0 +1,89 @@
+{
+  "forumTitle": "YS Forum",
+  "dayLabel": "Day 1 - sample agenda",
+
+  "sessions": [
+    {
+      "title": "Session 1: Opening keynote",
+      "time": "09:30 - 10:15",
+      "room": "Main Hall",
+      "speaker": "Speaker name (placeholder)",
+      "brief": "Welcome to the YS Forum. Placeholder brief: what the session is about, who it is for and what you take away.",
+      "ahead": 8,
+      "side": 0
+    },
+    {
+      "title": "Session 2: Panel discussion",
+      "time": "10:30 - 11:30",
+      "room": "Room A",
+      "speaker": "Panel (placeholder)",
+      "brief": "Placeholder brief for the panel. Replace with the real description from the programme.",
+      "ahead": 4,
+      "side": -6
+    },
+    {
+      "title": "Session 3: Workshop",
+      "time": "11:45 - 13:00",
+      "room": "Room B",
+      "speaker": "Workshop lead (placeholder)",
+      "brief": "Hands-on workshop. Placeholder brief: bring a laptop, limited seats.",
+      "ahead": 4,
+      "side": 6
+    },
+    {
+      "title": "Session 4: Networking",
+      "time": "13:00 - 14:00",
+      "room": "Terrace",
+      "speaker": "Everyone",
+      "brief": "Lunch and networking. Placeholder brief.",
+      "ahead": 12,
+      "side": 3
+    }
+  ],
+
+  "hunt": [
+    {
+      "target": 1,
+      "id": "pen",
+      "name": "Penkala's pen",
+      "points": 100,
+      "line": "Good job finding my pen! I'm Slavoljub Penkala.",
+      "fact": "In Zagreb in 1906 I patented the mechanical pencil, and a year later a fountain pen with solid ink.",
+      "video": "videos/hunt_pen.mp4"
+    },
+    {
+      "target": 2,
+      "id": "tie",
+      "name": "The necktie (kravata)",
+      "points": 100,
+      "line": "Good job finding the tie!",
+      "fact": "In the 1600s Croatian soldiers in France wore knotted neck scarves. The French called them 'cravates', after the Croats.",
+      "video": "videos/hunt_tie.mp4"
+    },
+    {
+      "target": 3,
+      "id": "parachute",
+      "name": "Vrancic's parachute",
+      "points": 150,
+      "line": "Good job finding my parachute! I'm Faust Vrancic from Sibenik.",
+      "fact": "In my book Machinae Novae (around 1615) I drew 'Homo Volans', a flying man under a square sail: an early parachute.",
+      "video": "videos/hunt_parachute.mp4"
+    },
+    {
+      "target": 4,
+      "id": "torpedo",
+      "name": "The Rijeka torpedo",
+      "points": 150,
+      "line": "Good job finding my torpedo! I'm Ivan Lupis from Rijeka.",
+      "fact": "Together with Robert Whitehead I built the first self-propelled torpedo in Rijeka in 1866.",
+      "video": "videos/hunt_torpedo.mp4"
+    }
+  ],
+
+  "sampleLeaderboard": [
+    { "name": "Sample player A", "points": 450 },
+    { "name": "Sample player B", "points": 350 },
+    { "name": "Sample player C", "points": 250 },
+    { "name": "Sample player D", "points": 100 }
+  ]
+}
