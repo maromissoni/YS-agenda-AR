@@ -1,46 +1,43 @@
 {
-  "forumTitle": "YS Forum",
-  "dayLabel": "Day 1 - sample agenda",
-
+  "forumTitle": "YOUTH SPEAK 27’",
   "sessions": [
     {
-      "title": "Session 1: Opening keynote",
-      "time": "09:30 - 10:15",
-      "room": "Main Hall",
+      "title": "Session 1",
+      "time": "12:00",
+      "room": "Room 6",
       "speaker": "Speaker name (placeholder)",
-      "brief": "Welcome to the YS Forum. Placeholder brief: what the session is about, who it is for and what you take away.",
+      "brief": "Placeholder brief: what the session is about, who it is for and what you take away.",
       "ahead": 8,
       "side": 0
     },
     {
-      "title": "Session 2: Panel discussion",
-      "time": "10:30 - 11:30",
-      "room": "Room A",
-      "speaker": "Panel (placeholder)",
-      "brief": "Placeholder brief for the panel. Replace with the real description from the programme.",
+      "title": "Session 2",
+      "time": "12:00",
+      "room": "Room 7",
+      "speaker": "Speaker name (placeholder)",
+      "brief": "Placeholder brief: what the session is about, who it is for and what you take away.",
       "ahead": 4,
       "side": -6
     },
     {
-      "title": "Session 3: Workshop",
-      "time": "11:45 - 13:00",
-      "room": "Room B",
-      "speaker": "Workshop lead (placeholder)",
-      "brief": "Hands-on workshop. Placeholder brief: bring a laptop, limited seats.",
+      "title": "Session 3",
+      "time": "12:00",
+      "room": "Room 10",
+      "speaker": "Speaker name (placeholder)",
+      "brief": "Placeholder brief: what the session is about, who it is for and what you take away.",
       "ahead": 4,
       "side": 6
     },
     {
-      "title": "Session 4: Networking",
-      "time": "13:00 - 14:00",
-      "room": "Terrace",
-      "speaker": "Everyone",
-      "brief": "Lunch and networking. Placeholder brief.",
+      "title": "Session 4",
+      "time": "12:00",
+      "room": "Room 1",
+      "speaker": "Speaker name (placeholder)",
+      "brief": "Placeholder brief: what the session is about, who it is for and what you take away.",
       "ahead": 12,
       "side": 3
     }
   ],
-
   "hunt": [
     {
       "target": 1,
@@ -79,11 +76,22 @@
       "video": "videos/hunt_torpedo.mp4"
     }
   ],
-
   "sampleLeaderboard": [
-    { "name": "Sample player A", "points": 450 },
-    { "name": "Sample player B", "points": 350 },
-    { "name": "Sample player C", "points": 250 },
-    { "name": "Sample player D", "points": 100 }
+    {
+      "name": "Sample player A",
+      "points": 450
+    },
+    {
+      "name": "Sample player B",
+      "points": 350
+    },
+    {
+      "name": "Sample player C",
+      "points": 250
+    },
+    {
+      "name": "Sample player D",
+      "points": 100
+    }
   ]
 }

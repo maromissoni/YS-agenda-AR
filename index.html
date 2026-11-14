@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <title>YS Forum AR</title>
-  <meta name="theme-color" content="#141414">
+  <title>Youth Speak AR</title>
+  <meta name="theme-color" content="#7551cc">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="YS Forum AR">
+  <meta name="apple-mobile-web-app-title" content="Youth Speak AR">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=5">
   <script type="importmap">
     { "imports": { "three": "./lib/three/three.module.js", "three/addons/": "./lib/three/addons/" } }
   </script>
@@ -24,17 +24,18 @@
 
     <section id="start" class="screen">
       <div class="screen-card">
-        <span class="tag">Lo-fi prototype</span>
-        <h1 id="start-title">YS Forum AR</h1>
-        <p>Point your camera at the agenda poster. No poster? Point at any wall and tap <strong>Place agenda here</strong>.</p>
-        <button id="btn-start" class="btn primary">Start</button>
+        <img class="mark" src="logo/logo.png" alt="">
+        <h1 id="start-title">Youth Speak AR</h1>
+        <p>Point your phone at a wall. The Youth Speak logo appears: tap it to open the agenda.</p>
+        <button id="btn-start-wall" class="btn primary">Place the logo on a wall</button>
+        <button id="btn-start" class="btn">Scan the printed marker</button>
         <p id="start-status" class="status"></p>
+        <p class="status">Version <span id="app-version">?</span></p>
       </div>
     </section>
 
     <nav id="bar" class="bar" hidden>
-      <button id="btn-place">Place agenda here</button>
-      <button id="btn-show-agenda" hidden>Show agenda</button>
+      <button id="btn-place">Place on a wall</button>
       <button id="btn-hunt" class="primary">Scavenger hunt</button>
     </nav>
 
@@ -43,6 +44,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=5"></script>
 </body>
 </html>
