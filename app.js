@@ -8,7 +8,7 @@ import { MindARThree } from './lib/mindar/mindar-image-three.prod.js';
 import { CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { Group, Quaternion, Euler, Vector3, MathUtils } from 'three';
 
-const AGENDA_TARGET = 0; // index of agenda_poster in targets.mind
+const AGENDA_TARGET = 0; // the wall marker (the bird painting) is the first image in targets.mind
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -102,7 +102,7 @@ function setStatus(text, isError = false) {
   s.classList.toggle('error', isError);
 }
 
-const APP_VERSION = 'v5';
+const APP_VERSION = 'v6';
 
 function askMotionAccess() {
   // iPhone asks for motion access; the request must come straight from a tap, before anything is awaited.
@@ -185,9 +185,10 @@ async function start(placeOnWall = false) {
 }
 
 // ---------------------------------------------------------------- animated logo
-// The logo is one flat colour, so each video stores only its shape (white = logo, black = see-through).
-// Every frame is copied to a canvas as "brand purple, with the video's brightness as opacity".
-// That gives a transparent animation on iPhone and Android alike.
+// Phone browsers cannot play a video with a see-through background, so each logo video stores two
+// black-and-white shapes side by side: left = where the purple goes, right = where the white megaphone goes.
+// Every frame is rebuilt on a canvas from those two shapes, which gives a transparent animation
+// on iPhone and Android alike.
 
 const LOGO_W = 460, LOGO_H = 550;
 const LOGO_RGB = [117, 81, 204];
@@ -196,15 +197,11 @@ function createLogo() {
   const canvas = el('canvas', { width: LOGO_W, height: LOGO_H });
   const ctx = canvas.getContext('2d');
   const scratch = document.createElement('canvas');
-  scratch.width = LOGO_W;
+  scratch.width = LOGO_W * 2;
   scratch.height = LOGO_H;
   const sctx = scratch.getContext('2d', { willReadFrequently: true });
   const out = ctx.createImageData(LOGO_W, LOGO_H);
-  for (let i = 0; i < out.data.length; i += 4) {
-    out.data[i] = LOGO_RGB[0];
-    out.data[i + 1] = LOGO_RGB[1];
-    out.data[i + 2] = LOGO_RGB[2];
-  }
+  const level = (v) => (v < 12 ? 0 : v > 243 ? 255 : v); // cleans up video compression noise
 
   const ext = document.createElement('video').canPlayType('video/mp4; codecs="avc1.4D401F"') ? 'mp4' : 'webm';
   const makeVideo = (name, loops) => {
@@ -292,13 +289,27 @@ function createLogo() {
       lastTime = t;
       let src;
       try {
-        sctx.drawImage(v, 0, 0, LOGO_W, LOGO_H);
-        src = sctx.getImageData(0, 0, LOGO_W, LOGO_H).data;
+        sctx.drawImage(v, 0, 0, LOGO_W * 2, LOGO_H);
+        src = sctx.getImageData(0, 0, LOGO_W * 2, LOGO_H).data;
       } catch { showStill(); return; }
       const dst = out.data;
-      for (let i = 0; i < src.length; i += 4) {
-        const a = src[i];
-        dst[i + 3] = a < 12 ? 0 : a > 243 ? 255 : a;
+      const [pr, pg, pb] = LOGO_RGB;
+      for (let y = 0, o = 0; y < LOGO_H; y++) {
+        let i = y * LOGO_W * 8;      // this row in the left half (purple shape)
+        let j = i + LOGO_W * 4;      // same row in the right half (white shape)
+        for (let x = 0; x < LOGO_W; x++, i += 4, j += 4, o += 4) {
+          const a = level(src[i]);
+          const w = level(src[j]);
+          if (w === 0) {
+            dst[o] = pr; dst[o + 1] = pg; dst[o + 2] = pb; dst[o + 3] = a;
+          } else {
+            const t = a + w;
+            dst[o] = (pr * a + 255 * w) / t;
+            dst[o + 1] = (pg * a + 255 * w) / t;
+            dst[o + 2] = (pb * a + 255 * w) / t;
+            dst[o + 3] = t > 255 ? 255 : t;
+          }
+        }
       }
       ctx.putImageData(out, 0, 0);
       drewFrame = true;
@@ -592,7 +603,7 @@ function openLeaderboard() {
 // ---------------------------------------------------------------- directions (2D map + steps)
 
 function directionSteps(s) {
-  const steps = [wallMode ? 'Stand with your back to the wall where you placed the agenda.' : 'Stand with your back to the agenda on the wall.'];
+  const steps = [wallMode ? 'Stand with your back to the wall where you placed the agenda.' : 'Stand with your back to the painting.'];
   if (s.ahead > 0) steps.push(`Walk about ${s.ahead} m straight ahead.`);
   if (s.side) steps.push(`${s.ahead > 0 ? 'Turn' : 'Go'} ${s.side > 0 ? 'right' : 'left'} and walk about ${Math.abs(s.side)} m.`);
   steps.push(`${s.room} is there.`);
@@ -623,7 +634,7 @@ function buildMap(target) {
   map.append(svg('line', { x1: 0, y1: Y(0), x2: W, y2: Y(0), stroke: '#2b1a66', 'stroke-width': 3 }));
   map.append(svg('rect', { x: X(0) - 14, y: Y(0) - 3, width: 28, height: 9, fill: '#2b1a66' }));
   const posterLabel = svg('text', { x: X(0), y: Y(0) + 24, 'text-anchor': 'middle', 'font-size': 12, fill: '#6b6585' });
-  posterLabel.textContent = 'Agenda (start)';
+  posterLabel.textContent = wallMode ? 'Agenda (start)' : 'Painting (start)';
   map.append(posterLabel);
 
   // route
@@ -684,7 +695,7 @@ function updateChrome() {
     if (stageVisible && !agendaOpen) hint = 'Tap the logo to open the agenda';
     else if (stageVisible && selectedSession < 0) hint = 'Tap a session to see its brief';
     else if (stageVisible) hint = wallMode ? 'The brief is to the right: turn the phone right \u2192' : 'The brief is to the right of the agenda \u2192';
-    else if (huntVisible.size === 0) hint = 'Point the camera at the Youth Speak marker, or tap "Place on a wall"';
+    else if (huntVisible.size === 0) hint = 'Point the camera at the bird painting';
   }
   banner.hidden = hint === null;
   if (hint) banner.textContent = hint;

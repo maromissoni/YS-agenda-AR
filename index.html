@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
   <script type="importmap">
     { "imports": { "three": "./lib/three/three.module.js", "three/addons/": "./lib/three/addons/" } }
   </script>
@@ -26,9 +26,9 @@
       <div class="screen-card">
         <img class="mark" src="logo/logo.png" alt="">
         <h1 id="start-title">Youth Speak AR</h1>
-        <p>Point your phone at a wall. The Youth Speak logo appears: tap it to open the agenda.</p>
-        <button id="btn-start-wall" class="btn primary">Place the logo on a wall</button>
-        <button id="btn-start" class="btn">Scan the printed marker</button>
+        <p>Point your phone at the bird painting. The Youth Speak logo appears on it: tap the logo to open the agenda.</p>
+        <button id="btn-start" class="btn primary">Start</button>
+        <button id="btn-start-wall" class="btn">No painting nearby? Place it on a wall</button>
         <p id="start-status" class="status"></p>
         <p class="status">Version <span id="app-version">?</span></p>
       </div>
@@ -44,6 +44,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>
