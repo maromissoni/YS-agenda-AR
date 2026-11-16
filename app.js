@@ -13,7 +13,7 @@ import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer
 
 window.THREE = THREE; // the XR engine's three.js module looks for THREE here
 
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 
 // Real-world sizes, in metres. The agenda card in the design is 1360 px tall.
 const CARD_HEIGHT_M = 1.0;
@@ -179,7 +179,6 @@ async function start() {
         XR8.XrController.updateCameraProjectionMatrix({ origin: camera.position, facing: camera.quaternion });
         running = true;
         clearTimeout(slowNote);
-        setTimeout(ensureModel, 1500); // load the pen detector in the background
         $('#start').hidden = true;
         updateChrome();
       },
@@ -550,7 +549,7 @@ function ensureModel() {
   modelState = 'loading';
   updateChrome();
   try {
-    worker = new Worker('pen-worker.js?v=9');
+    worker = new Worker('pen-worker.js?v=10');
   } catch (e) {
     console.warn('Hunt worker:', e);
     setModelState('error');

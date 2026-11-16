@@ -12,7 +12,7 @@ Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, 
 
 1. If they are still there from version 6 or older, delete `lib/mindar`, `markers`, `print` and `targets.mind` in your repository (… menu → Delete). They are no longer used.
 2. Click **Add file → Upload files**, select **everything inside this folder** (Cmd+A) and drag it in. Use Chrome so the folders upload too.
-3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v9**.
+3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v10**.
 
 The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first time.
 
@@ -36,7 +36,7 @@ The `pen-model` folder already contains a detector trained on your two videos: t
 - It only saw the pen lying on that white desk. It may miss it somewhere very different (a dark shelf, in someone's hand, in dim light).
 - This is an ordinary blue-capped ballpoint, so it may also react to other pens of the same kind. At the forum, use a pen nobody else will have, or keep similar pens away from the hiding spot.
 - It must see the pen in the middle of the screen for about a second before it counts.
-- It starts loading in the background as soon as the camera is on, so it is usually ready by the time you open the hunt.
+- It loads when you open the scavenger hunt (a few seconds the first time), so it never disturbs the agenda tracking.
 
 **To improve it**, film 20–30 seconds of the pen in its real hiding spot at the venue (different angles and distances, keep it near the middle), plus 20–30 seconds of the same area without it, and have it retrained.
 
