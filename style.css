@@ -31,10 +31,10 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--ink); font-
 button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 [hidden] { display: none !important; }
 
-/* Camera picture (drawn by the XR engine) and the HTML pinned in the room */
-#xr { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; z-index: 0; display: block; }
-#css3d { position: fixed; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; }
-#css3d > div { pointer-events: none; }
+/* Camera picture and the agenda pinned in the room, both drawn by the XR engine */
+/* The 3D renderer writes the canvas's pixel size into its style (twice or three times the screen on a phone),
+   which zoomed the camera picture in. !important keeps it exactly the size of the screen. */
+#xr { position: fixed; inset: 0; width: 100% !important; height: 100% !important; z-index: 0; display: block; touch-action: none; }
 
 /* Aiming dot before placing, and the scanning frame for the hunt */
 .reticle { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, 0.95); box-shadow: 0 0 0 2px rgba(117, 81, 204, 0.7); pointer-events: none !important; }
@@ -61,6 +61,7 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 }
 .bar button { flex: 1; min-height: 56px; border-radius: 999px; font-weight: 700; font-size: 15px; line-height: 1.2; padding: 0 10px; background: var(--panel); color: var(--ink); }
 .bar button.primary { background: var(--brand); color: #fff; }
+.bar button:disabled { opacity: 0.5; }
 
 /* Start / error screen */
 .screen {
@@ -108,80 +109,3 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 .video-box video { width: 100%; height: 100%; object-fit: cover; background: #000; }
 .quote { font-size: 18px !important; font-weight: 700; }
 .map { width: 100%; height: auto; background: #fff; border-radius: 14px; }
-
-/* ------------------------------------------------------------------ the AR stage
-   Laid out in the pixels of the agenda design (1231 x 1727): the card is 1089 x 1360 at (0, 367),
-   the logo sits on its top-right corner. While "solo", only the logo shows, large and centred. */
-.ar-stage, .ar-back { position: relative; width: 1231px; height: 1727px; font-family: var(--font); color: #fff; user-select: none; -webkit-user-select: none; }
-
-/* The back, seen when you walk behind it: the front mirrored, without buttons */
-.ar-back { pointer-events: none; }
-.ar-back .back-logo { position: absolute; left: 17px; top: -14.5px; width: 368.5px; height: 440.6px; z-index: 2; transition: transform 650ms cubic-bezier(0.2, 0.8, 0.2, 1); }
-.ar-back.solo .back-logo { transform: translate(414px, 658px) scale(1.9); }
-.ar-back .back-card { position: absolute; left: 142px; top: 367px; width: 1089px; height: 1360px; border-radius: 112px; background: var(--card-gradient); display: flex; align-items: center; justify-content: center; transition: opacity 320ms ease; }
-.ar-back .back-card p { margin: 0; font-size: 104px; font-weight: 900; }
-.ar-back.solo .back-card { opacity: 0; }
-
-.ar-logo {
-  position: absolute; left: 845.5px; top: -14.5px; width: 368.5px; height: 440.6px;
-  padding: 0; background: none; border: 0; pointer-events: none; z-index: 2;
-  transition: transform 650ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-.ar-logo canvas { display: block; width: 100%; height: 100%; }
-.ar-stage.has-logo .ar-logo { pointer-events: auto; }
-.ar-stage.solo .ar-logo { transform: translate(-414px, 658px) scale(1.9); }
-
-.ar-card {
-  position: absolute; left: 0; top: 367px; width: 1089px; min-height: 1360px;
-  border-radius: 112px; background: var(--card-gradient);
-  padding: 0 0 123px; pointer-events: auto;
-  transform-origin: 94% 2%;
-  transition: transform 520ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 320ms ease, visibility 0s;
-}
-.ar-stage.solo .ar-card { opacity: 0; transform: scale(0.15); visibility: hidden; pointer-events: none; transition: transform 380ms ease, opacity 260ms ease, visibility 0s 380ms; }
-
-.ar-head { height: 373px; padding-top: 98px; text-align: center; }
-.ar-head h1 { margin: 0; font-size: 104px; line-height: 104px; font-weight: 900; letter-spacing: -1px; white-space: nowrap; }
-.ar-head p { margin: 8px 0 0; font-size: 62px; line-height: 62px; font-weight: 300; }
-
-.ar-sessions { margin: 0 134px 0 173px; display: flex; flex-direction: column; gap: 47px; }
-.ar-session {
-  min-height: 131px; padding: 16px 40px; border-radius: 56px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  color: #fff; text-align: center;
-  background: rgba(104, 52, 132, 0.2);
-  border: 1.5px solid rgba(255, 255, 255, 0.22);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
-}
-.ar-session .title { font-size: 48px; line-height: 54px; font-weight: 900; }
-.ar-session .meta { font-size: 30px; line-height: 36px; font-weight: 300; }
-.ar-session.selected { background: rgba(255, 255, 255, 0.26); border-color: #fff; }
-
-.ar-actions { margin: 76px 0 0 208px; display: flex; gap: 31px; }
-.ar-pill {
-  width: 340px; min-height: 122px; padding: 10px 40px; border-radius: 56px;
-  color: #fff; font-size: 30px; line-height: 44px; text-align: center;
-  border: 1.5px solid rgba(255, 255, 255, 0.24);
-}
-.ar-pill.ghost { background: rgba(255, 255, 255, 0.22); font-weight: 300; }
-.ar-pill.solid { background: #6c4ebf; font-weight: 900; }
-.ar-pill.wide { width: 100%; font-size: 40px; line-height: 48px; }
-
-.ar-brief {
-  position: absolute; left: 1149px; top: 367px; width: 900px; min-height: 1360px;
-  border-radius: 112px; background: var(--card-gradient);
-  padding: 98px 84px 100px; pointer-events: auto;
-  display: flex; flex-direction: column; gap: 30px;
-}
-.ar-brief h2 { margin: 0; font-size: 76px; line-height: 84px; font-weight: 900; }
-.ar-brief p { margin: 0; font-size: 42px; line-height: 58px; font-weight: 400; }
-.ar-brief .meta { font-weight: 300; font-size: 46px; }
-.ar-spacer { flex: 1; min-height: 20px; }
-.ar-stage.solo .ar-brief, .ar-brief.is-closed { display: none; }
-
-.ar-badge { width: 1000px; padding: 40px; border-radius: 80px; background: var(--brand); color: #fff; font-family: var(--font); font-size: 84px; font-weight: 900; text-align: center; pointer-events: none; }
-.is-closed { display: none !important; }
-
-@media (prefers-reduced-motion: reduce) {
-  .ar-logo, .ar-card { transition: none !important; }
-}

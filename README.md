@@ -2,7 +2,7 @@
 
 An AR agenda and scavenger hunt that runs in the phone's browser (Safari on iPhone, Chrome on Android). No app store, no fees.
 
-**The flow:** aim at a wall and tap **Place here** → the Youth Speak logo animates in, pinned in that spot in the room, and keeps looping → tap the logo → the agenda opens → tap a session for its brief and directions. Walk around it, even behind it: it stays where you put it.
+**The flow:** point at the floor for a few seconds, then aim at a wall and tap **Place here** → the Youth Speak logo animates in, pinned in that spot in the room, and keeps looping → tap the logo → the agenda opens → tap a session for its brief and directions. Walk around it, even behind it: it stays where you put it.
 
 **Scavenger hunt:** point the camera at the real pen. An image model trained on your pen videos recognises it, and Penkala's panel appears.
 
@@ -10,23 +10,24 @@ Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, 
 
 ## Update the version that is already online
 
-1. If they are still there from version 6 or older, delete `lib/mindar`, `markers`, `print` and `targets.mind` in your repository (… menu → Delete). They are no longer used.
+1. If they are still there from older versions, delete `lib/mindar`, `markers`, `print`, `targets.mind` and `lib/three/addons` in your repository (… menu → Delete). They are no longer used.
 2. Click **Add file → Upload files**, select **everything inside this folder** (Cmd+A) and drag it in. Use Chrome so the folders upload too.
-3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v10**.
+3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v11**.
 
 The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first time.
 
 ## Try it on your phone
 
 1. Open the link, tap **Start**, and allow the camera. On iPhone also tap **Allow** for motion access: the app needs it to track the room.
-2. If the banner says *Move your phone slowly from side to side*, do that for a few seconds. The engine is learning the room.
-3. Stand about 1.5 m from the wall, aim the dot at it and tap **Place here**. The logo appears there.
+2. **Point the camera at the floor** and move the phone slowly from side to side. The engine learns the room from the floor much better than from a plain wall. **Place here** stays greyed out until the tracking is steady (usually 2–5 seconds).
+3. When the banner says *Now aim at the wall*, stand about 1.5 m from the wall, aim the dot at it and tap **Place here**. The logo appears there.
 4. Tap the logo to open the agenda. Tap it again, or **Close agenda**, to fold it away. **Move here** places it somewhere else.
 
 **Good to know**
 - A plain white wall has nothing for the camera to measure, so the agenda is placed 1.5 m in front of you, not stuck exactly onto the wall surface. If the wall has some texture (a poster, a light switch, a door frame), the app measures the real distance.
 - Tracking is steadiest in good light with some objects in view (floor, furniture, doors). In a bare white corridor it can drift.
-- The agenda card is about 1 m tall. To change it, edit `CARD_HEIGHT_M` near the top of `app.js`.
+- When placed, the agenda card fills about half the screen width (with the brief open, card and brief together fill the screen). Walk closer to read it. To make it bigger or smaller, change `FIT_WIDTH` near the top of `app.js` (0.5 = half the screen width).
+- If the banner says *Lost track of the room*, point at the floor or furniture and move slowly; the agenda comes back to its place.
 
 ## The pen detector
 

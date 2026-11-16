@@ -6,18 +6,17 @@
 // World tracking: 8th Wall XR Engine (lib/xr). This product includes the XR Engine software developed by
 // Niantic Spatial, Inc. Copyright (c) 2026 Niantic Spatial, Inc. Licensed under the XR Engine License Agreement
 // (lib/xr/LICENSE), which also contains the disclaimer of warranties.
-// 3D maths and the HTML-in-3D renderer: three.js (MIT). Object recognition: TensorFlow.js (Apache 2.0).
+// 3D: three.js (MIT). Object recognition: TensorFlow.js (Apache 2.0).
 
 import * as THREE from 'three';
-import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 
 window.THREE = THREE; // the XR engine's three.js module looks for THREE here
 
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 
-// Real-world sizes, in metres. The agenda card in the design is 1360 px tall.
-const CARD_HEIGHT_M = 1.0;
-const PX_TO_M = CARD_HEIGHT_M / 1360;
+// Size: when placed, the agenda card fills this share of the screen width (0.5 = half).
+// Larger = bigger agenda. With the brief open, card + brief together fill about twice this.
+const FIT_WIDTH = 0.5;
 const DEFAULT_DISTANCE_M = 1.5;
 const EYE_HEIGHT_M = 1.5; // height the phone is assumed to start at; sets the scale of the room
 
@@ -72,14 +71,7 @@ function el(tag, attrs = {}, ...children) {
 
 let content = null;
 let logo = null;          // the animated logo (see createLogo)
-let stageEl = null;       // front: logo, agenda card, brief
-let backEl = null;        // what you see from behind
-let briefRoot = null;
-let stageObj = null;
-let backObj = null;
 let placedGroup = null;   // pinned in the room
-let cssScene = null;
-let cssRenderer = null;
 let xrCamera = null;
 let cameraVideo = null;   // the live camera picture (used by the pen detector)
 let renderedFrames = 0;
@@ -121,7 +113,6 @@ function sizeCanvas() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.round(window.innerWidth * dpr);
   canvas.height = Math.round(window.innerHeight * dpr);
-  if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight);
 }
 
 async function start() {
@@ -148,6 +139,7 @@ async function start() {
   let XR8;
   try {
     content = content || await loadContent();
+    await loadFonts();
     const answers = await Promise.all(motionAsks);
     if (answers.includes('denied')) {
       fail('Motion access is needed to pin the agenda in the room. Close Safari completely, open the link again and tap Allow.');
@@ -173,11 +165,13 @@ async function start() {
     {
       name: 'youthspeak',
       onStart: () => {
-        const { camera } = XR8.Threejs.xrScene();
+        const { scene, camera, renderer } = XR8.Threejs.xrScene();
         xrCamera = camera;
         camera.position.set(0, EYE_HEIGHT_M, 0);
         XR8.XrController.updateCameraProjectionMatrix({ origin: camera.position, facing: camera.quaternion });
+        attachStage(scene, renderer);
         running = true;
+        runningSince = Date.now();
         clearTimeout(slowNote);
         $('#start').hidden = true;
         updateChrome();
@@ -186,22 +180,27 @@ async function start() {
         if (status === 'hasVideo' && video) cameraVideo = video;
         if (status === 'failed') fail('The camera did not start. Allow camera access for this site in your browser settings, then reload.');
       },
+      // Runs after the engine has moved the three.js camera and before it draws the frame,
+      // so the agenda is drawn in exactly the same frame as the camera picture.
       onUpdate: ({ processCpuResult }) => {
         const reality = processCpuResult && processCpuResult.reality;
         if (reality && reality.trackingStatus && reality.trackingStatus !== tracking) {
           tracking = reality.trackingStatus;
+          normalSince = tracking === 'NORMAL' ? Date.now() : 0;
           updateChrome();
         }
+        const ready = trackingReady();
+        if (ready !== wasReady) { wasReady = ready; updateChrome(); }
+        if (!xrCamera) return;
+        logo.draw();
+        updateStage();
+        updateInView();
       },
       onRender: () => {
         if (!xrCamera) return;
         renderedFrames++;
-        updateInView();
-        logo.draw();
-        cssRenderer.render(cssScene, xrCamera);
         if (scanning) grabScanFrame();
       },
-      onCanvasSizeChange: () => { if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight); },
       onException: (e) => {
         if (e && e.type === 'permission') fail('Camera and motion access are needed. Allow them for this site, then reload.');
       },
@@ -209,61 +208,362 @@ async function start() {
   ]);
   XR8.run({ canvas: $('#xr'), allowedDevices: XR8.XrConfig.device().ANY });
 }
+let wasReady = false;
 
 // ---------------------------------------------------------------- the stage, pinned in the room
-// Laid out in the pixels of the agenda design (1231 x 1727) and shrunk to metres.
+// The logo, the agenda card and the brief are drawn with WebGL in the same picture as the camera,
+// in the same frame. (In v10 they were web page elements laid over the camera, which lag a frame
+// behind the camera picture and seem to swim.)
+// Everything is laid out in the pixels of the agenda design: the stage is 1231 x 1727, the card
+// 1089 wide at (0, 367), the logo on its top-right corner, the brief to its right.
+// When placed, the stage is sized so the card fills FIT_WIDTH of the screen width.
 
-function buildStage() {
-  const sessions = el('div', { class: 'ar-sessions' });
-  content.sessions.forEach((s, i) => {
-    sessions.append(el('button', { class: 'ar-session', 'data-index': i, onclick: () => showBrief(i) },
-      el('span', { class: 'title' }, s.title),
-      el('span', { class: 'meta' }, `${s.room}  |  ${s.time}`),
-    ));
-  });
+const STAGE_W = 1231, STAGE_H = 1727;
+const CARD_BOX = { x: 0, y: 367, w: 1089 };
+const BACK_CARD_X = STAGE_W - CARD_BOX.w;         // the back is the front mirrored
+const LOGO_BOX = { x: 845.5, y: -14.5, w: 368.5, h: 440.6 };
+const BACK_LOGO_X = 17;
+const BRIEF_BOX = { x: 1149, w: 900 };
+const SOLO = { dx: -414, dy: 658, scale: 1.9 };   // logo alone: big, in the middle of the stage
+const SLIDE_PX = (BRIEF_BOX.x + BRIEF_BOX.w - STAGE_W) / 2; // shift so card + brief are centred
+const OPEN_MS = 600, BRIEF_MS = 380;
 
-  const card = el('div', { class: 'ar-card' },
-    el('div', { class: 'ar-head' },
-      el('h1', {}, content.forumTitle),
-      el('p', {}, 'AGENDA'),
-    ),
-    sessions,
-    el('div', { class: 'ar-actions' },
-      el('button', { class: 'ar-pill ghost', onclick: closeAgenda }, 'Close agenda'),
-      el('button', { class: 'ar-pill solid', onclick: openHunt }, 'Scavenger Hunt'),
-    ),
-  );
+const FONT = 'Lato, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+const font = (weight, size) => `${weight} ${size}px ${FONT}`;
 
-  const logoButton = el('button', { class: 'ar-logo', 'aria-label': 'Open the agenda', onclick: toggleAgenda }, logo.canvas);
-  briefRoot = el('div', { class: 'ar-brief is-closed' });
-  stageEl = el('div', { class: 'ar-stage solo' }, card, briefRoot, logoButton);
+let stage = null;     // meshes, canvases and tap areas (see buildStage)
+let openT = 0;        // 0 = logo alone, 1 = agenda open (animated)
+let briefT = 0;       // 0 = no brief, 1 = brief shown (animated)
+let lastFrameAt = 0;
 
-  // The back: seen when you walk behind it. Mirrored, so the logo stays on the same side of the room.
-  backEl = el('div', { class: 'ar-back solo' },
-    el('div', { class: 'back-card' }, el('p', {}, content.forumTitle)),
-    el('img', { class: 'back-logo', src: 'logo/logo.png', alt: '' }),
-  );
+// Design pixels (y down, origin top-left of the stage) -> stage space (y up, origin in the middle).
+const sx = (px) => px - STAGE_W / 2;
+const sy = (py) => STAGE_H / 2 - py;
 
-  cssScene = new THREE.Scene();
-  cssRenderer = new CSS3DRenderer();
-  cssRenderer.setSize(window.innerWidth, window.innerHeight);
-  $('#css3d').append(cssRenderer.domElement);
-
-  stageObj = new CSS3DObject(stageEl);
-  backObj = new CSS3DObject(backEl);
-  backObj.rotation.y = Math.PI;
-  for (const o of [stageObj, backObj]) {
-    o.scale.setScalar(PX_TO_M);
-    o.visible = false;
-  }
-  placedGroup = new THREE.Group();
-  placedGroup.add(stageObj, backObj);
-  cssScene.add(placedGroup);
+function loadFonts() {
+  if (!document.fonts || !document.fonts.load) return Promise.resolve();
+  const sample = 'AaZz09ČčĆćĐđŠšŽž';
+  const all = Promise.all(['300', '400', '900'].map((w) => document.fonts.load(font(w, 40), sample).catch(() => null)));
+  return Promise.race([all, new Promise((r) => setTimeout(r, 4000))]);
 }
 
-// Pin the stage upright, facing you, on the wall you are aiming at.
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// The purple card of the design: a 140° gradient with a grey glow in the bottom-left corner.
+function paintCard(ctx, w, h) {
+  ctx.save();
+  roundRect(ctx, 0, 0, w, h, 112);
+  ctx.clip();
+  const a = (140 * Math.PI) / 180, dx = Math.sin(a), dy = -Math.cos(a);
+  const len = Math.abs(w * dx) + Math.abs(h * dy);
+  const g = ctx.createLinearGradient(w / 2 - (dx * len) / 2, h / 2 - (dy * len) / 2, w / 2 + (dx * len) / 2, h / 2 + (dy * len) / 2);
+  g.addColorStop(0, '#9d85eb');
+  g.addColorStop(0.44, '#7854cf');
+  g.addColorStop(0.72, '#5a3bb2');
+  g.addColorStop(1, '#442997');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.translate(0, h);
+  ctx.scale(1.2 * w, 0.9 * h);
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  glow.addColorStop(0, 'rgba(120, 120, 150, 0.35)');
+  glow.addColorStop(0.55, 'rgba(120, 120, 150, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(-1, -1, 2, 2);
+  ctx.restore();
+}
+
+// Text on one line, shrunk if it is wider than maxWidth.
+function fitText(ctx, text, x, y, weight, size, maxWidth) {
+  let s = size;
+  ctx.font = font(weight, s);
+  while (s > 12 && ctx.measureText(text).width > maxWidth) {
+    s -= 2;
+    ctx.font = font(weight, s);
+  }
+  ctx.fillText(text, x, y);
+}
+
+function wrapLines(ctx, text, maxWidth) {
+  const lines = [];
+  for (const para of String(text).split('\n')) {
+    let line = '';
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const test = line ? `${line} ${word}` : word;
+      if (line && ctx.measureText(test).width > maxWidth) { lines.push(line); line = word; } else line = test;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+function pill(ctx, x, y, w, h, fill, border, label, weight, size) {
+  roundRect(ctx, x, y, w, h, 56);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = border;
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  fitText(ctx, label, x + w / 2, y + h / 2 + 1, weight, size, w - 40);
+}
+
+function cardHeight() {
+  const n = content.sessions.length;
+  return Math.max(1360, 373 + n * 131 + Math.max(0, n - 1) * 47 + 76 + 122 + 123);
+}
+
+function drawCard() {
+  const { cardCanvas: cv } = stage;
+  const w = CARD_BOX.w, h = cardHeight();
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  paintCard(ctx, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  fitText(ctx, content.forumTitle, w / 2, 150, 900, 104, w - 90);
+  ctx.font = font(300, 62);
+  ctx.fillText('AGENDA', w / 2, 241);
+
+  const areas = [];
+  let y = 373;
+  content.sessions.forEach((s, i) => {
+    const x = 173, pw = w - 173 - 134, ph = 131;
+    const selected = i === selectedSession;
+    roundRect(ctx, x, y, pw, ph, 56);
+    ctx.fillStyle = selected ? 'rgba(255, 255, 255, 0.26)' : 'rgba(104, 52, 132, 0.2)';
+    ctx.fill();
+    ctx.lineWidth = selected ? 3 : 1.5;
+    ctx.strokeStyle = selected ? '#fff' : 'rgba(255, 255, 255, 0.22)';
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    fitText(ctx, s.title, x + pw / 2, y + 45.5, 900, 48, pw - 80);
+    fitText(ctx, `${s.room}  |  ${s.time}`, x + pw / 2, y + 94.5, 300, 30, pw - 80);
+    areas.push({ x, y, w: pw, h: ph, name: `session${i}`, tap: () => showBrief(i) });
+    y += ph + 47;
+  });
+  y += 76 - 47;
+  pill(ctx, 208, y, 340, 122, 'rgba(255, 255, 255, 0.22)', 'rgba(255, 255, 255, 0.24)', 'Close agenda', 300, 30);
+  pill(ctx, 579, y, 340, 122, '#6c4ebf', 'rgba(255, 255, 255, 0.24)', 'Scavenger Hunt', 900, 30);
+  areas.push({ x: 208, y, w: 340, h: 122, name: 'close', tap: closeAgenda });
+  areas.push({ x: 579, y, w: 340, h: 122, name: 'hunt', tap: openHunt });
+  stage.cardAreas = areas;
+  stage.cardH = h;
+  refreshTexture('card', cv);
+}
+
+function drawBrief(index) {
+  const s = content.sessions[index];
+  const { briefCanvas: cv } = stage;
+  const w = BRIEF_BOX.w, pad = 84, inner = w - pad * 2;
+  const measure = cv.getContext('2d');
+  // Lay the text out first to know how tall the brief must be.
+  const blocks = [
+    { text: s.title, weight: 900, size: 76, lh: 84 },
+    { text: `${s.room}  |  ${s.time}`, weight: 300, size: 46, lh: 58 },
+    { text: `Speaker: ${s.speaker}`, weight: 400, size: 42, lh: 58 },
+    { text: s.brief, weight: 400, size: 42, lh: 58 },
+  ].map((b) => { measure.font = font(b.weight, b.size); return { ...b, lines: wrapLines(measure, b.text, inner) }; });
+  const textH = blocks.reduce((sum, b) => sum + b.lines.length * b.lh, 0) + 30 * (blocks.length - 1);
+  const buttonsH = 122 + 30 + 122;
+  const h = Math.max(stage.cardH, 98 + textH + 50 + buttonsH + 100);
+
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  paintCard(ctx, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  let y = 98;
+  for (const b of blocks) {
+    ctx.font = font(b.weight, b.size);
+    for (const line of b.lines) { ctx.fillText(line, pad, y + b.lh / 2); y += b.lh; }
+    y += 30;
+  }
+  const yClose = h - 100 - 122, yDirs = yClose - 30 - 122;
+  pill(ctx, pad, yDirs, inner, 122, '#6c4ebf', 'rgba(255, 255, 255, 0.24)', 'Directions to the room', 900, 40);
+  pill(ctx, pad, yClose, inner, 122, 'rgba(255, 255, 255, 0.22)', 'rgba(255, 255, 255, 0.24)', 'Close brief', 300, 40);
+  stage.briefAreas = [
+    { x: pad, y: yDirs, w: inner, h: 122, name: 'directions', tap: () => openDirections(index) },
+    { x: pad, y: yClose, w: inner, h: 122, name: 'closeBrief', tap: closeBrief },
+  ];
+  stage.briefH = h;
+  refreshTexture('brief', cv);
+}
+
+function drawBackCard() {
+  const cv = stage.backCanvas;
+  const w = CARD_BOX.w, h = stage.cardH;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  paintCard(ctx, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  fitText(ctx, content.forumTitle, w / 2, h / 2, 900, 104, w - 90);
+  refreshTexture('back', cv);
+}
+
+function makeTexture(canvas, mipmaps = true) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.generateMipmaps = mipmaps;
+  t.minFilter = mipmaps ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  if (stage.maxAniso) t.anisotropy = Math.min(8, stage.maxAniso);
+  return t;
+}
+
+// A canvas that changed size needs a new texture; one that only changed its pixels just a re-upload.
+function refreshTexture(key, canvas) {
+  const mesh = stage[`${key}Mesh`];
+  const old = mesh.material.map;
+  if (old && old.image === canvas && old.userData.w === canvas.width && old.userData.h === canvas.height) {
+    old.needsUpdate = true;
+    return;
+  }
+  if (old) old.dispose();
+  const t = makeTexture(canvas);
+  t.userData = { w: canvas.width, h: canvas.height };
+  mesh.material.map = t;
+  mesh.material.needsUpdate = true;
+}
+
+function plane(renderOrder) {
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.FrontSide, toneMapped: false }),
+  );
+  m.renderOrder = renderOrder;
+  m.visible = false;
+  return m;
+}
+
+function buildStage() {
+  const mk = () => document.createElement('canvas');
+  stage = { cardCanvas: mk(), briefCanvas: mk(), backCanvas: mk(), cardAreas: [], briefAreas: [], cardH: 1360, briefH: 1360 };
+
+  stage.front = new THREE.Group();   // logo, card, brief: seen from the front
+  stage.back = new THREE.Group();    // seen when you walk behind it
+  stage.back.rotation.y = Math.PI;
+  stage.back.position.z = -2;
+
+  stage.cardMesh = plane(1);
+  stage.briefMesh = plane(1);
+  stage.logoMesh = plane(2);
+  stage.backMesh = plane(1);
+  stage.backLogoMesh = plane(2);
+  stage.front.add(stage.cardMesh, stage.briefMesh, stage.logoMesh);
+  stage.back.add(stage.backMesh, stage.backLogoMesh);
+
+  stage.cardMesh.userData.onTap = (uv) => tapArea(stage.cardAreas, uv, CARD_BOX.w, stage.cardH);
+  stage.briefMesh.userData.onTap = (uv) => tapArea(stage.briefAreas, uv, BRIEF_BOX.w, stage.briefH);
+  stage.logoMesh.userData.onTap = () => { toggleAgenda(); return true; };
+  stage.backLogoMesh.userData.onTap = stage.logoMesh.userData.onTap;
+
+  placedGroup = new THREE.Group();
+  placedGroup.add(stage.front, stage.back);
+  placedGroup.visible = false;
+}
+
+// Called once the XR engine has made its three.js scene.
+function attachStage(scene, renderer) {
+  stage.maxAniso = renderer && renderer.capabilities ? renderer.capabilities.getMaxAnisotropy() : 1;
+  drawCard();
+  drawBackCard();
+  const logoTex = makeTexture(logo.canvas, false);
+  stage.logoTex = logoTex;
+  stage.logoMesh.material.map = logoTex;
+  stage.backLogoMesh.material.map = logoTex;
+  scene.add(placedGroup);
+}
+
+function tapArea(areas, uv, w, h) {
+  const x = uv.x * w, y = (1 - uv.y) * h;
+  const hit = areas.find((a) => x >= a.x && x <= a.x + a.w && y >= a.y && y <= a.y + a.h);
+  if (hit) hit.tap();
+  return true; // a tap on the card itself is used up even if it missed a button
+}
+
+const ease = (t) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
+const mix = (a, b, t) => a + (b - a) * t;
+
+// Puts a mesh with its top-left corner at design pixel (x, y), size w x h, scaled s around point (ox, oy).
+function layout(mesh, x, y, w, h, z, s = 1, ox = x + w / 2, oy = y + h / 2) {
+  const cx = ox + (x + w / 2 - ox) * s, cy = oy + (y + h / 2 - oy) * s;
+  mesh.position.set(sx(cx), sy(cy), z);
+  mesh.scale.set(w * s, h * s, 1);
+}
+
+// Every frame: animate opening and closing, and keep the logo picture up to date.
+function updateStage() {
+  const now = performance.now();
+  const dt = lastFrameAt ? Math.min(100, now - lastFrameAt) : 16;
+  lastFrameAt = now;
+  openT = Math.min(1, Math.max(0, openT + (agendaOpen ? 1 : -1) * (dt / OPEN_MS)));
+  const briefWanted = agendaOpen && selectedSession >= 0;
+  briefT = Math.min(1, Math.max(0, briefT + (briefWanted ? 1 : -1) * (dt / BRIEF_MS)));
+  const e = ease(openT), b = ease(briefT);
+
+  if (logo.takeDirty()) stage.logoTex.needsUpdate = true;
+  if (!placed) return;
+
+  // Logo: big in the middle when alone, on the card's corner when the agenda is open.
+  const ls = mix(SOLO.scale, 1, e);
+  const lx = LOGO_BOX.x + mix(SOLO.dx, 0, e), ly = LOGO_BOX.y + mix(SOLO.dy, 0, e);
+  layout(stage.logoMesh, lx, ly, LOGO_BOX.w, LOGO_BOX.h, 4, ls);
+  stage.logoMesh.visible = logo.phase !== 'hidden';
+  const blx = BACK_LOGO_X + mix(-SOLO.dx, 0, e);
+  layout(stage.backLogoMesh, blx, ly, LOGO_BOX.w, LOGO_BOX.h, 4, ls);
+  stage.backLogoMesh.visible = stage.logoMesh.visible;
+
+  // Card: grows out of the logo's corner.
+  const ch = stage.cardH;
+  layout(stage.cardMesh, CARD_BOX.x, CARD_BOX.y, CARD_BOX.w, ch, 0, mix(0.15, 1, e), CARD_BOX.x + 0.94 * CARD_BOX.w, CARD_BOX.y + 0.02 * ch);
+  stage.cardMesh.material.opacity = Math.min(1, e * 1.6);
+  stage.cardMesh.visible = openT > 0.02;
+  layout(stage.backMesh, BACK_CARD_X, CARD_BOX.y, CARD_BOX.w, ch, 0);
+  stage.backMesh.material.opacity = e;
+  stage.backMesh.visible = openT > 0.02;
+
+  // Brief: fades in on the right, and everything slides left so card + brief stay centred.
+  layout(stage.briefMesh, BRIEF_BOX.x, CARD_BOX.y, BRIEF_BOX.w, stage.briefH, 0);
+  stage.briefMesh.material.opacity = b;
+  stage.briefMesh.visible = briefT > 0.02;
+  stage.front.position.x = -SLIDE_PX * b;
+}
+
+// ---------------------------------------------------------------- placing it
+
+// The engine needs about a second of steady tracking before anything is pinned, or it drifts.
+let normalSince = 0;
+let runningSince = 0;
+const TRACKING_SETTLE_MS = 1000;
+const TRACKING_GIVE_UP_MS = 12000; // after this, placing is allowed anyway
+function trackingReady() {
+  const now = Date.now();
+  if (tracking === 'NORMAL' && normalSince && now - normalSince >= TRACKING_SETTLE_MS) return true;
+  return runningSince > 0 && now - runningSince > TRACKING_GIVE_UP_MS;
+}
+
+// Pin the stage upright, facing you, on the wall you are aiming at, sized to fit the screen.
 function placeHere() {
   if (!running || !xrCamera) return;
+  if (!placed && !trackingReady()) { updateChrome(); return; }
   const pos = xrCamera.position.clone();
   const forward = new THREE.Vector3();
   xrCamera.getWorldDirection(forward);
@@ -283,43 +583,99 @@ function placeHere() {
     if (ahead.length) distance = ahead[0] - 0.03;
   } catch { /* keep the fixed distance */ }
 
-  placedGroup.position.set(pos.x + forward.x * distance, pos.y - 0.1, pos.z + forward.z * distance);
+  // How wide the screen is at that distance, from the camera's field of view.
+  const e0 = xrCamera.projectionMatrix.elements[0] || 3.4;
+  const screenWidthM = (2 * distance) / e0;
+  const metresPerPx = (FIT_WIDTH * screenWidthM) / CARD_BOX.w;
+
+  placedGroup.position.set(pos.x + forward.x * distance, pos.y - 0.05, pos.z + forward.z * distance);
   placedGroup.rotation.set(0, Math.atan2(-forward.x, -forward.z), 0);
+  placedGroup.scale.setScalar(metresPerPx);
   placedGroup.updateMatrixWorld(true);
-  stageObj.visible = true;
-  backObj.visible = false;
+  placedGroup.visible = true;
+  placedInfo = { distance: Number(distance.toFixed(2)), cardWidthM: Number((CARD_BOX.w * metresPerPx).toFixed(2)) };
 
   placed = true;
-  closeAgenda();
+  agendaOpen = false;
+  selectedSession = -1;
+  openT = 0;
+  briefT = 0;
+  drawCard();
   inView = true;
   lastSeenAt = Date.now();
-  stageEl.classList.add('has-logo');
   logo.appear();
+  updateStage();
   updateChrome();
 }
+let placedInfo = null;
 
-// Shows the front or the back depending on which side of it you are standing,
-// replays the logo intro when you come back to it after looking away, and saves battery while it is off-screen.
-// Points (in metres, relative to the centre of the stage) used to decide whether any part of it is on screen.
-const VIEW_POINTS = [[0, 0], [-0.4, 0.5], [0.4, 0.5], [-0.4, -0.5], [0.4, -0.5], [0.15, 0.6]];
-const BRIEF_POINTS = [[0.75, -0.1], [0.75, 0.4], [0.75, -0.6]];
+// ---------------------------------------------------------------- tapping it
+
+const raycaster = new THREE.Raycaster();
+const tapPoint = new THREE.Vector2();
+let pressAt = null;
+
+function tapTargets() {
+  return [stage.logoMesh, stage.backLogoMesh, stage.briefMesh, stage.cardMesh]
+    .filter((m) => m.visible && (m.material.opacity > 0.5 || m === stage.logoMesh || m === stage.backLogoMesh));
+}
+
+function onStageTap(clientX, clientY) {
+  if (!placed || !xrCamera || currentSheet) return false;
+  tapPoint.set((clientX / window.innerWidth) * 2 - 1, -(clientY / window.innerHeight) * 2 + 1);
+  xrCamera.updateMatrixWorld();
+  xrCamera.projectionMatrixInverse.copy(xrCamera.projectionMatrix).invert();
+  placedGroup.updateMatrixWorld(true);
+  raycaster.setFromCamera(tapPoint, xrCamera);
+  for (const hit of raycaster.intersectObjects(tapTargets(), false)) {
+    const handler = hit.object.userData.onTap;
+    if (handler && handler(hit.uv)) return true;
+  }
+  return false;
+}
+
+// Screen position of a part of the stage (used by the automated tests to tap it).
+function screenPointOf(name) {
+  let mesh = null, px = 0, py = 0;
+  if (name === 'logo') {
+    mesh = stage.logoMesh;
+  } else {
+    const inBrief = stage.briefAreas.find((a) => a.name === name);
+    const inCard = stage.cardAreas.find((a) => a.name === name);
+    const a = inBrief || inCard;
+    if (!a) return null;
+    mesh = inBrief ? stage.briefMesh : stage.cardMesh;
+    const w = inBrief ? BRIEF_BOX.w : CARD_BOX.w, h = inBrief ? stage.briefH : stage.cardH;
+    px = (a.x + a.w / 2) / w - 0.5;
+    py = 0.5 - (a.y + a.h / 2) / h;
+  }
+  const v = new THREE.Vector3(px, py, 0);
+  mesh.updateMatrixWorld(true);
+  mesh.localToWorld(v);
+  v.project(xrCamera);
+  return { x: (v.x + 1) / 2 * window.innerWidth, y: (1 - v.y) / 2 * window.innerHeight, onScreen: Math.abs(v.x) < 1 && Math.abs(v.y) < 1 && v.z < 1 };
+}
+
+// ---------------------------------------------------------------- in view or not
+
+// Replays the logo intro when you come back to it after looking away, and saves battery while it is off-screen.
+// Points of the stage (design pixels) used to decide whether any part of it is on screen.
+const VIEW_PX = [[615, 863], [0, 367], [1089, 367], [0, 1727], [1089, 1727], [1030, 206]];
+const BRIEF_PX = [[1599, 1047], [2049, 367], [2049, 1727]];
 const projected = new THREE.Vector3();
-const facing = new THREE.Vector3();
 function anyPointOnScreen() {
-  const pts = selectedSession >= 0 && agendaOpen ? VIEW_POINTS.concat(BRIEF_POINTS) : VIEW_POINTS;
+  const pts = briefT > 0.5 ? VIEW_PX.concat(BRIEF_PX) : VIEW_PX;
   for (const [x, y] of pts) {
-    projected.set(x, y, 0);
-    placedGroup.localToWorld(projected);
+    projected.set(sx(x), sy(y), 0);
+    stage.front.localToWorld(projected);
     projected.project(xrCamera);
     if (projected.z < 1 && Math.abs(projected.x) < 1 && Math.abs(projected.y) < 1) return true;
   }
   return false;
 }
+
 function updateInView() {
   if (!placed) return;
-  facing.set(0, 0, 1).applyQuaternion(placedGroup.quaternion);
-  const inFront = projected.copy(xrCamera.position).sub(placedGroup.position).dot(facing) >= 0;
-  if (stageObj.visible !== inFront) { stageObj.visible = inFront; backObj.visible = !inFront; }
   const now = Date.now();
   const visible = anyPointOnScreen();
   if (visible && !inView) {
@@ -336,15 +692,11 @@ function updateInView() {
 
 function openAgenda() {
   agendaOpen = true;
-  stageEl.classList.remove('solo');
-  backEl.classList.remove('solo');
   updateChrome();
 }
 
 function closeAgenda() {
   agendaOpen = false;
-  stageEl.classList.add('solo');
-  backEl.classList.add('solo');
   updateChrome();
 }
 
@@ -354,27 +706,15 @@ function toggleAgenda() {
 }
 
 function showBrief(index) {
-  const s = content.sessions[index];
   selectedSession = index;
-  stageEl.querySelectorAll('.ar-session').forEach((b) => b.classList.toggle('selected', Number(b.dataset.index) === index));
-
-  briefRoot.replaceChildren(
-    el('h2', {}, s.title),
-    el('p', { class: 'meta' }, `${s.room}  |  ${s.time}`),
-    el('p', {}, `Speaker: ${s.speaker}`),
-    el('p', {}, s.brief),
-    el('div', { class: 'ar-spacer' }),
-    el('button', { class: 'ar-pill solid wide', onclick: () => openDirections(index) }, 'Directions to the room'),
-    el('button', { class: 'ar-pill ghost wide', onclick: closeBrief }, 'Close brief'),
-  );
-  briefRoot.classList.remove('is-closed');
+  drawCard();
+  drawBrief(index);
   updateChrome();
 }
 
 function closeBrief() {
   selectedSession = -1;
-  briefRoot.classList.add('is-closed');
-  stageEl.querySelectorAll('.ar-session').forEach((b) => b.classList.remove('selected'));
+  drawCard();
   updateChrome();
 }
 
@@ -416,6 +756,7 @@ function createLogo() {
   still.src = 'logo/logo.png';
 
   let phase = 'hidden'; // hidden | intro | loop | still
+  let dirty = false;    // the picture changed since the 3D view last copied it
   let lastTime = -1;
   let drewFrame = false;
   let watchdog = 0;
@@ -427,7 +768,7 @@ function createLogo() {
     phase = 'still';
     intro.pause();
     loop.pause();
-    const paint = () => { ctx.clearRect(0, 0, LOGO_W, LOGO_H); ctx.drawImage(still, 0, 0, LOGO_W, LOGO_H); };
+    const paint = () => { ctx.clearRect(0, 0, LOGO_W, LOGO_H); ctx.drawImage(still, 0, 0, LOGO_W, LOGO_H); dirty = true; };
     if (still.complete && still.naturalWidth) paint(); else still.onload = paint;
   }
 
@@ -449,6 +790,7 @@ function createLogo() {
   return {
     canvas,
     get phase() { return phase; },
+    takeDirty() { const d = dirty; dirty = false; return d; },
 
     prime() {
       for (const v of [intro, loop]) {
@@ -463,6 +805,7 @@ function createLogo() {
       lastTime = -1;
       drewFrame = false;
       ctx.clearRect(0, 0, LOGO_W, LOGO_H);
+      dirty = true;
       loop.pause();
       if (intro.error) { showStill(); return; }
       try { intro.currentTime = 0; } catch { /* not loaded yet */ }
@@ -507,6 +850,7 @@ function createLogo() {
       }
       ctx.putImageData(out, 0, 0);
       drewFrame = true;
+      dirty = true;
     },
   };
 }
@@ -549,7 +893,7 @@ function ensureModel() {
   modelState = 'loading';
   updateChrome();
   try {
-    worker = new Worker('pen-worker.js?v=10');
+    worker = new Worker('pen-worker.js?v=11');
   } catch (e) {
     console.warn('Hunt worker:', e);
     setModelState('error');
@@ -842,9 +1186,11 @@ function updateChrome() {
         : modelState === 'error' ? 'The object detector could not load. Tap "Stop scanning" and try again.'
         : 'Point the camera at the hidden object';
     } else if (!placed) {
-      hint = tracking === 'NORMAL'
-        ? 'Aim at the wall, about 1.5 m away, and tap "Place here"'
-        : 'Move your phone slowly from side to side';
+      hint = trackingReady()
+        ? 'Now aim at the wall, about 1.5 m away, and tap "Place here"'
+        : 'Point the camera at the floor and move the phone slowly from side to side';
+    } else if (tracking !== 'NORMAL') {
+      hint = 'Lost track of the room: point at the floor or furniture and move slowly';
     } else if (!inView) {
       hint = 'Look around to find the agenda';
     } else if (!agendaOpen) {
@@ -863,6 +1209,7 @@ function updateChrome() {
   $('#scan-frame').hidden = !running || !scanning || Boolean(currentSheet);
   $('#btn-place').hidden = scanning;
   $('#btn-place').textContent = placed ? 'Move here' : 'Place here';
+  $('#btn-place').disabled = !placed && !trackingReady();
   $('#btn-stop-scan').hidden = !scanning;
 }
 
@@ -873,6 +1220,14 @@ $('#btn-start').addEventListener('click', start);
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
 $('#btn-place').addEventListener('click', placeHere);
+// Taps on the agenda: the screen point is traced into the room to see what it hits.
+$('#xr').addEventListener('pointerdown', (e) => { pressAt = { x: e.clientX, y: e.clientY, t: Date.now() }; });
+$('#xr').addEventListener('pointerup', (e) => {
+  const p = pressAt;
+  pressAt = null;
+  if (!p || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 20 || Date.now() - p.t > 800) return;
+  onStageTap(e.clientX, e.clientY);
+});
 $('#btn-hunt').addEventListener('click', openHunt);
 $('#btn-stop-scan').addEventListener('click', stopScanning);
 $('#app-version').textContent = APP_VERSION;
@@ -884,9 +1239,11 @@ loadContent()
 // A small hook for automated testing.
 window.__ysf = {
   get state() {
-    return { running, placed, tracking, inView, agendaOpen, logo: logo ? logo.phase : null, selectedSession,
-      sheet: currentSheet, scanning, modelState, frames: renderedFrames, score: score(), found: foundMap() };
+    return { running, placed, tracking, ready: trackingReady(), inView, agendaOpen, logo: logo ? logo.phase : null, selectedSession,
+      sheet: currentSheet, scanning, modelState, frames: renderedFrames, score: score(), found: foundMap(),
+      placedInfo, openT: Number(openT.toFixed(2)), briefT: Number(briefT.toFixed(2)) };
   },
   placeHere,
+  screenPointOf,
   turn(radians) { if (placedGroup) placedGroup.rotation.y += radians; }, // lets a test look at the back
 };
