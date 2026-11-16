@@ -1,14 +1,25 @@
 // Youth Speak AR - web app.
-// Flow: Start -> the wall marker is recognised (or the logo is placed on a wall) -> the logo animates in and loops
+// Flow: Start -> aim at a wall and tap "Place here" -> the logo animates in, pinned in the room, and loops
 //       -> tap the logo -> the agenda opens -> tap a session -> brief -> directions.
-//       Agenda -> scavenger hunt -> find an object -> video + fact -> claim points -> leaderboard.
-// Image tracking: MindAR (MIT). 3D/CSS rendering: three.js (MIT). Both are in /lib, no CDN needed.
+//       Scavenger hunt: point the camera at the real pen -> a trained image model recognises it -> claim points.
+//
+// World tracking: 8th Wall XR Engine (lib/xr). This product includes the XR Engine software developed by
+// Niantic Spatial, Inc. Copyright (c) 2026 Niantic Spatial, Inc. Licensed under the XR Engine License Agreement
+// (lib/xr/LICENSE), which also contains the disclaimer of warranties.
+// 3D maths and the HTML-in-3D renderer: three.js (MIT). Object recognition: TensorFlow.js (Apache 2.0).
 
-import { MindARThree } from './lib/mindar/mindar-image-three.prod.js';
-import { CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
-import { Group, Quaternion, Euler, Vector3, MathUtils } from 'three';
+import * as THREE from 'three';
+import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 
-const AGENDA_TARGET = 0; // the wall marker (the bird painting) is the first image in targets.mind
+window.THREE = THREE; // the XR engine's three.js module looks for THREE here
+
+const APP_VERSION = 'v7';
+
+// Real-world sizes, in metres. The agenda card in the design is 1360 px tall.
+const CARD_HEIGHT_M = 1.0;
+const PX_TO_M = CARD_HEIGHT_M / 1360;
+const DEFAULT_DISTANCE_M = 1.5;
+const EYE_HEIGHT_M = 1.5; // height the phone is assumed to start at; sets the scale of the room
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -60,33 +71,26 @@ function el(tag, attrs = {}, ...children) {
 // ---------------------------------------------------------------- state
 
 let content = null;
-let mindar = null;
-let stageEl = null;   // everything pinned to the wall: logo, agenda card, brief
-let stageObj = null;
+let logo = null;          // the animated logo (see createLogo)
+let stageEl = null;       // front: logo, agenda card, brief
+let backEl = null;        // what you see from behind
 let briefRoot = null;
-let logo = null;      // the animated logo (see createLogo)
-let stageVisible = false; // the marker is in view, or the logo is placed on a wall
-let agendaOpen = false;
-let lastLostAt = 0;
-let selectedSession = -1;
-let currentSheet = null; // { kind, id }
-const huntVisible = new Set();
-const huntBadges = new Map();
-const discoveryCooldown = new Map();
+let stageObj = null;
+let backObj = null;
+let placedGroup = null;   // pinned in the room
+let cssScene = null;
+let cssRenderer = null;
+let xrCamera = null;
 
-// "Place agenda here" (no poster): the agenda is pinned in the direction the phone pointed,
-// using the phone's motion sensors. It stays put when you turn, but does not get closer when you walk.
-let wallMode = false;
-let wallGroup = null;
-let wallHolder = null;
-let qNow = null;   // current phone orientation
-let qPlace = null; // phone orientation when the agenda was placed
-let orientationListening = false;
-let orientationAsked = false;
-const zAxis = new Vector3(0, 0, 1);
-const eulerTmp = new Euler();
-const qTmp = new Quaternion();
-const qScreenFix = new Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // camera looks out of the back of the phone
+let running = false;      // camera + tracking started
+let placed = false;
+let tracking = 'LIMITED'; // NORMAL once the engine has a good lock on the room
+let inView = false;
+let lastSeenAt = 0;
+let agendaOpen = false;
+let selectedSession = -1;
+let currentSheet = null;  // { kind, id }
+const discoveryCooldown = new Map();
 
 // ---------------------------------------------------------------- start
 
@@ -102,85 +106,259 @@ function setStatus(text, isError = false) {
   s.classList.toggle('error', isError);
 }
 
-const APP_VERSION = 'v6';
+function waitForXR8(timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    if (window.XR8) { resolve(window.XR8); return; }
+    const timer = setTimeout(() => reject(new Error('xr-timeout')), timeoutMs);
+    window.addEventListener('xrloaded', () => { clearTimeout(timer); resolve(window.XR8); }, { once: true });
+  });
+}
 
-function askMotionAccess() {
-  // iPhone asks for motion access; the request must come straight from a tap, before anything is awaited.
-  const DOE = window.DeviceOrientationEvent;
-  if (DOE && typeof DOE.requestPermission === 'function' && !orientationAsked) {
-    orientationAsked = true;
-    DOE.requestPermission().catch(() => { /* no motion access: the agenda stays fixed on the screen */ });
+function sizeCanvas() {
+  const canvas = $('#xr');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(window.innerWidth * dpr);
+  canvas.height = Math.round(window.innerHeight * dpr);
+  if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+async function start() {
+  const button = $('#btn-start');
+  if (!window.isSecureContext) {
+    setStatus('The camera only works on a secure address (https://). Open the GitHub Pages link.', true);
+    return;
   }
-  listenOrientation(); // readings arrive once motion access is allowed
-}
 
-function startWithoutPoster() {
-  askMotionAccess();
-  start(true);
-}
-
-async function start(placeOnWall = false) {
-  // Still inside the tap: lets the phone play the logo animation later without another tap.
+  // These must happen inside the tap, before anything is awaited:
+  // iPhone asks for motion access (needed to track the room), and the logo videos get permission to play.
+  const motionAsks = [];
+  for (const E of [window.DeviceMotionEvent, window.DeviceOrientationEvent]) {
+    if (E && typeof E.requestPermission === 'function') motionAsks.push(E.requestPermission().catch(() => 'denied'));
+  }
   logo = logo || createLogo();
   logo.prime();
 
-  const buttons = [$('#btn-start'), $('#btn-start-wall')];
-  const setButtons = (disabled) => buttons.forEach((b) => { if (b) b.disabled = disabled; });
-  if (!window.isSecureContext) {
-    setStatus('The camera only works on a secure address (https://). Open the GitHub Pages link instead of the file.', true);
-    return;
-  }
-  setButtons(true);
+  button.disabled = true;
   setStatus('Starting the camera...');
-  const slowNote = setTimeout(() => setStatus('Still loading the image tracker... this can take up to 20 seconds on the first visit.'), 6000);
+  const slowNote = setTimeout(() => setStatus('Still loading the AR engine... this can take up to 20 seconds on the first visit.'), 6000);
+  const fail = (text) => { clearTimeout(slowNote); setStatus(text, true); button.disabled = false; };
 
+  let XR8;
   try {
     content = content || await loadContent();
+    const answers = await Promise.all(motionAsks);
+    if (answers.includes('denied')) {
+      fail('Motion access is needed to pin the agenda in the room. Close Safari completely, open the link again and tap Allow.');
+      return;
+    }
+    XR8 = await waitForXR8();
   } catch (e) {
-    clearTimeout(slowNote);
-    setStatus('Could not load the agenda (content.json). Check that all files were uploaded.', true);
-    setButtons(false);
+    fail(e && e.message === 'xr-timeout'
+      ? 'The AR engine did not load. Check your connection and reload the page.'
+      : 'Could not load the agenda (content.json). Check that all files were uploaded.');
     return;
   }
-
-  mindar = new MindARThree({
-    container: $('#ar'),
-    imageTargetSrc: 'targets.mind',
-    maxTrack: 1,
-    uiLoading: 'no',
-    uiScanning: 'no',
-    uiError: 'no',
-  });
 
   buildStage();
-  buildHuntAnchors();
+  sizeCanvas();
+  window.addEventListener('resize', sizeCanvas);
 
-  try {
-    await mindar.start();
-  } catch (e) {
-    clearTimeout(slowNote);
-    setStatus('The camera did not start. Allow camera access for this site in your browser settings, then reload.', true);
-    setButtons(false);
-    return;
-  }
-  clearTimeout(slowNote);
+  XR8.XrController.configure({ scale: 'responsive', disableWorldTracking: false });
+  XR8.addCameraPipelineModules([
+    XR8.GlTextureRenderer.pipelineModule(), // draws the camera picture
+    XR8.Threejs.pipelineModule(),           // a three.js camera that follows the phone
+    XR8.XrController.pipelineModule(),      // world tracking
+    {
+      name: 'youthspeak',
+      onStart: () => {
+        const { camera } = XR8.Threejs.xrScene();
+        xrCamera = camera;
+        camera.position.set(0, EYE_HEIGHT_M, 0);
+        XR8.XrController.updateCameraProjectionMatrix({ origin: camera.position, facing: camera.quaternion });
+        running = true;
+        clearTimeout(slowNote);
+        $('#start').hidden = true;
+        updateChrome();
+      },
+      onCameraStatusChange: ({ status }) => {
+        if (status === 'failed') fail('The camera did not start. Allow camera access for this site in your browser settings, then reload.');
+      },
+      onUpdate: ({ processCpuResult }) => {
+        const reality = processCpuResult && processCpuResult.reality;
+        if (reality && reality.trackingStatus && reality.trackingStatus !== tracking) {
+          tracking = reality.trackingStatus;
+          updateChrome();
+        }
+      },
+      onRender: () => {
+        if (!xrCamera) return;
+        updateInView();
+        logo.draw();
+        cssRenderer.render(cssScene, xrCamera);
+        if (scanning) grabScanFrame();
+      },
+      onCanvasSizeChange: () => { if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight); },
+      onException: (e) => {
+        if (e && e.type === 'permission') fail('Camera and motion access are needed. Allow them for this site, then reload.');
+      },
+    },
+  ]);
+  XR8.run({ canvas: $('#xr'), allowedDevices: XR8.XrConfig.device().ANY });
+}
 
-  const { renderer, cssRenderer, scene, cssScene, camera } = mindar;
-  wallGroup = new Group();
-  wallHolder = new Group();
-  wallGroup.add(wallHolder);
-  cssScene.add(wallGroup);
+// ---------------------------------------------------------------- the stage, pinned in the room
+// Laid out in the pixels of the agenda design (1231 x 1727) and shrunk to metres.
 
-  renderer.setAnimationLoop(() => {
-    updateWall();
-    logo.draw();
-    renderer.render(scene, camera);
-    cssRenderer.render(cssScene, camera);
+function buildStage() {
+  const sessions = el('div', { class: 'ar-sessions' });
+  content.sessions.forEach((s, i) => {
+    sessions.append(el('button', { class: 'ar-session', 'data-index': i, onclick: () => showBrief(i) },
+      el('span', { class: 'title' }, s.title),
+      el('span', { class: 'meta' }, `${s.room}  |  ${s.time}`),
+    ));
   });
 
-  $('#start').hidden = true;
-  $('#bar').hidden = false;
-  if (placeOnWall) placeOnWallHere();
+  const card = el('div', { class: 'ar-card' },
+    el('div', { class: 'ar-head' },
+      el('h1', {}, content.forumTitle),
+      el('p', {}, 'AGENDA'),
+    ),
+    sessions,
+    el('div', { class: 'ar-actions' },
+      el('button', { class: 'ar-pill ghost', onclick: closeAgenda }, 'Close agenda'),
+      el('button', { class: 'ar-pill solid', onclick: openHunt }, 'Scavenger Hunt'),
+    ),
+  );
+
+  const logoButton = el('button', { class: 'ar-logo', 'aria-label': 'Open the agenda', onclick: toggleAgenda }, logo.canvas);
+  briefRoot = el('div', { class: 'ar-brief is-closed' });
+  stageEl = el('div', { class: 'ar-stage solo' }, card, briefRoot, logoButton);
+
+  // The back: seen when you walk behind it. Mirrored, so the logo stays on the same side of the room.
+  backEl = el('div', { class: 'ar-back solo' },
+    el('div', { class: 'back-card' }, el('p', {}, content.forumTitle)),
+    el('img', { class: 'back-logo', src: 'logo/logo.png', alt: '' }),
+  );
+
+  cssScene = new THREE.Scene();
+  cssRenderer = new CSS3DRenderer();
+  cssRenderer.setSize(window.innerWidth, window.innerHeight);
+  $('#css3d').append(cssRenderer.domElement);
+
+  stageObj = new CSS3DObject(stageEl);
+  backObj = new CSS3DObject(backEl);
+  backObj.rotation.y = Math.PI;
+  for (const o of [stageObj, backObj]) {
+    o.scale.setScalar(PX_TO_M);
+    o.visible = false;
+  }
+  placedGroup = new THREE.Group();
+  placedGroup.add(stageObj, backObj);
+  cssScene.add(placedGroup);
+}
+
+// Pin the stage upright, facing you, on the wall you are aiming at.
+function placeHere() {
+  if (!running || !xrCamera) return;
+  const pos = xrCamera.position.clone();
+  const forward = new THREE.Vector3();
+  xrCamera.getWorldDirection(forward);
+  forward.y = 0;
+  if (forward.lengthSq() < 1e-4) forward.set(0, 0, -1);
+  forward.normalize();
+
+  // A plain wall has almost nothing to measure, so use a fixed distance unless the engine
+  // found real points on the wall straight ahead.
+  let distance = DEFAULT_DISTANCE_M;
+  try {
+    const hits = window.XR8.XrController.hitTest(0.5, 0.5, ['FEATURE_POINT']) || [];
+    const ahead = hits
+      .map((h) => Math.hypot(h.position.x - pos.x, h.position.z - pos.z))
+      .filter((d) => d > 0.6 && d < 4)
+      .sort((a, b) => a - b);
+    if (ahead.length) distance = ahead[0] - 0.03;
+  } catch { /* keep the fixed distance */ }
+
+  placedGroup.position.set(pos.x + forward.x * distance, pos.y - 0.1, pos.z + forward.z * distance);
+  placedGroup.rotation.set(0, Math.atan2(-forward.x, -forward.z), 0);
+  stageObj.visible = true;
+  backObj.visible = false;
+
+  placed = true;
+  closeAgenda();
+  inView = true;
+  lastSeenAt = Date.now();
+  stageEl.classList.add('has-logo');
+  logo.appear();
+  updateChrome();
+}
+
+// Shows the front or the back depending on which side of it you are standing,
+// replays the logo intro when you come back to it after looking away, and saves battery while it is off-screen.
+const projected = new THREE.Vector3();
+const facing = new THREE.Vector3();
+function updateInView() {
+  if (!placed) return;
+  facing.set(0, 0, 1).applyQuaternion(placedGroup.quaternion);
+  const inFront = projected.copy(xrCamera.position).sub(placedGroup.position).dot(facing) >= 0;
+  if (stageObj.visible !== inFront) { stageObj.visible = inFront; backObj.visible = !inFront; }
+
+  projected.copy(placedGroup.position).project(xrCamera);
+  const now = Date.now();
+  const visible = projected.z < 1 && Math.abs(projected.x) < 1.15 && Math.abs(projected.y) < 1.15;
+  if (visible && !inView) {
+    inView = true;
+    if (!agendaOpen && now - lastSeenAt > 3000) logo.appear(); else logo.wake();
+    updateChrome();
+  } else if (!visible && inView) {
+    inView = false;
+    logo.sleep();
+    updateChrome();
+  }
+  if (visible) lastSeenAt = now;
+}
+
+function openAgenda() {
+  agendaOpen = true;
+  stageEl.classList.remove('solo');
+  backEl.classList.remove('solo');
+  updateChrome();
+}
+
+function closeAgenda() {
+  agendaOpen = false;
+  stageEl.classList.add('solo');
+  backEl.classList.add('solo');
+  updateChrome();
+}
+
+function toggleAgenda() {
+  if (logo.phase === 'hidden') return;
+  if (agendaOpen) closeAgenda(); else openAgenda();
+}
+
+function showBrief(index) {
+  const s = content.sessions[index];
+  selectedSession = index;
+  stageEl.querySelectorAll('.ar-session').forEach((b) => b.classList.toggle('selected', Number(b.dataset.index) === index));
+
+  briefRoot.replaceChildren(
+    el('h2', {}, s.title),
+    el('p', { class: 'meta' }, `${s.room}  |  ${s.time}`),
+    el('p', {}, `Speaker: ${s.speaker}`),
+    el('p', {}, s.brief),
+    el('div', { class: 'ar-spacer' }),
+    el('button', { class: 'ar-pill solid wide', onclick: () => openDirections(index) }, 'Directions to the room'),
+    el('button', { class: 'ar-pill ghost wide', onclick: closeBrief }, 'Close brief'),
+  );
+  briefRoot.classList.remove('is-closed');
+  updateChrome();
+}
+
+function closeBrief() {
+  selectedSession = -1;
+  briefRoot.classList.add('is-closed');
+  stageEl.querySelectorAll('.ar-session').forEach((b) => b.classList.remove('selected'));
   updateChrome();
 }
 
@@ -317,186 +495,121 @@ function createLogo() {
   };
 }
 
-// ---------------------------------------------------------------- the stage: logo -> tap -> agenda
+// ---------------------------------------------------------------- recognising the real pen
+// A small image model trained in Google Teachable Machine (free). It looks at the middle of the camera
+// picture a few times a second. Its classes are named after the hunt objects (e.g. "Pen") plus a
+// "Nothing" class for everything else. See README: "Train the pen detector".
 
-// The stage is laid out in the pixels of the agenda design (1231 x 1727).
-const STAGE_W = 1231;
-// On a printed marker the agenda card is drawn about 1.5x as wide as the marker, so it is easy to read.
-const STAGE_SCALE = 1.4;
+const SCAN_EVERY_MS = 350;
+let scanning = false;
+let modelState = 'none'; // none | loading | ready | missing | error
+let model = null;
+let modelLabels = [];
+let modelSize = 224;
+let modelPromise = null;
+let lastGrab = 0;
+let inferring = false;
+const streaks = new Map();
+let scratch = null;
 
-function buildStage() {
-  const anchor = mindar.addCSSAnchor(AGENDA_TARGET);
-
-  const sessions = el('div', { class: 'ar-sessions' });
-  content.sessions.forEach((s, i) => {
-    sessions.append(el('button', { class: 'ar-session', 'data-index': i, onclick: () => showBrief(i) },
-      el('span', { class: 'title' }, s.title),
-      el('span', { class: 'meta' }, `${s.room}  |  ${s.time}`),
-    ));
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`could not load ${src}`));
+    document.head.append(s);
   });
+}
 
-  const card = el('div', { class: 'ar-card' },
-    el('div', { class: 'ar-head' },
-      el('h1', {}, content.forumTitle),
-      el('p', {}, 'AGENDA'),
-    ),
-    sessions,
-    el('div', { class: 'ar-actions' },
-      el('button', { class: 'ar-pill ghost', onclick: closeAgenda }, 'Close agenda'),
-      el('button', { class: 'ar-pill solid', onclick: openHunt }, 'Scavenger Hunt'),
-    ),
-  );
+function modelBase() {
+  const base = content.huntModel || 'pen-model/';
+  return base.endsWith('/') ? base : `${base}/`;
+}
 
-  const logoButton = el('button', { class: 'ar-logo', 'aria-label': 'Open the agenda', onclick: toggleAgenda }, logo.canvas);
-  briefRoot = el('div', { class: 'ar-brief is-closed' });
-
-  stageEl = el('div', { class: 'ar-stage solo' }, card, briefRoot, logoButton);
-  stageObj = new CSS3DObject(stageEl);
-  stageEl.style.pointerEvents = 'none'; // only the logo, the card and the brief take taps
-  stageObj.scale.setScalar(STAGE_SCALE * 1000 / 1089);
-  anchor.group.add(stageObj);
-
-  anchor.onTargetFound = () => { if (!wallMode) onStageFound(); };
-  anchor.onTargetLost = () => {
-    if (wallMode) return;
-    stageVisible = false;
-    lastLostAt = Date.now();
-    logo.sleep();
+function ensureModel() {
+  if (modelPromise) return modelPromise;
+  modelState = 'loading';
+  modelPromise = (async () => {
+    const res = await fetch(`${modelBase()}metadata.json`, { cache: 'no-cache' });
+    if (!res.ok) { modelState = 'missing'; return; }
+    const meta = await res.json();
+    if (!window.tf) await loadScript('lib/tf/tf.min.js');
+    model = await window.tf.loadLayersModel(`${modelBase()}model.json`);
+    modelLabels = meta.labels || [];
+    modelSize = meta.imageSize || 224;
+    window.tf.tidy(() => model.predict(window.tf.zeros([1, modelSize, modelSize, 3]))); // warm up
+    modelState = 'ready';
+  })().catch((e) => {
+    console.warn('Hunt model:', e);
+    modelState = 'error';
+  }).finally(() => {
+    if (modelState !== 'ready') modelPromise = null; // allow a retry later
+    if (currentSheet && currentSheet.kind === 'hunt') openHunt();
     updateChrome();
-  };
+  });
+  return modelPromise;
 }
 
-// The marker came into view (or the logo was placed on a wall).
-function onStageFound(forceIntro = false) {
-  const wasAway = Date.now() - lastLostAt > 3000;
-  stageVisible = true;
-  stageEl.classList.add('has-logo');
-  // Replay the intro when the wall is recognised again, but not on a short tracking flicker
-  // and not while someone is reading the agenda.
-  if (forceIntro || logo.phase === 'hidden' || (!agendaOpen && wasAway)) logo.appear();
-  else logo.wake();
+function startScanning() {
+  closeSheet();
+  streaks.clear();
+  scanning = true;
+  ensureModel();
   updateChrome();
 }
 
-function openAgenda() {
-  agendaOpen = true;
-  stageEl.classList.remove('solo');
+function stopScanning() {
+  scanning = false;
+  streaks.clear();
   updateChrome();
 }
 
-function closeAgenda() {
-  agendaOpen = false;
-  stageEl.classList.add('solo');
-  updateChrome();
+// Called right after the camera picture is drawn, while it can still be read.
+function grabScanFrame() {
+  const now = Date.now();
+  if (modelState !== 'ready' || inferring || now - lastGrab < SCAN_EVERY_MS) return;
+  lastGrab = now;
+  const src = $('#xr');
+  if (!scratch) scratch = document.createElement('canvas');
+  scratch.width = scratch.height = modelSize;
+  const side = Math.min(src.width, src.height);
+  scratch.getContext('2d').drawImage(src, (src.width - side) / 2, (src.height - side) / 2, side, side, 0, 0, modelSize, modelSize);
+  inferring = true;
+  setTimeout(classifyScratch, 0);
 }
 
-function toggleAgenda() {
-  if (logo.phase === 'hidden') return;
-  if (agendaOpen) closeAgenda(); else openAgenda();
-}
-
-// ---------------------------------------------------------------- agenda on any wall (no poster)
-
-function onOrientation(e) {
-  if (e.alpha == null || e.beta == null || e.gamma == null) return;
-  const screenAngle = (screen.orientation && typeof screen.orientation.angle === 'number')
-    ? screen.orientation.angle : (window.orientation || 0);
-  eulerTmp.set(MathUtils.degToRad(e.beta), MathUtils.degToRad(e.alpha), -MathUtils.degToRad(e.gamma), 'YXZ');
-  if (!qNow) qNow = new Quaternion();
-  qNow.setFromEuler(eulerTmp);
-  qNow.multiply(qScreenFix);
-  qNow.multiply(qTmp.setFromAxisAngle(zAxis, -MathUtils.degToRad(screenAngle)));
-  // First reading after placing: pin the logo where it is on screen right now.
-  if (wallMode && !qPlace) qPlace = qNow.clone();
-}
-
-function listenOrientation() {
-  if (orientationListening) return;
-  orientationListening = true;
-  window.addEventListener('deviceorientation', onOrientation);
-}
-
-function placeOnWallHere() {
-  askMotionAccess();
-
-  wallMode = true;
-  qPlace = qNow ? qNow.clone() : null;
-
-  // Size it so the whole stage fills most of the screen width, a fixed distance in front of the camera.
-  const cam = mindar.camera;
-  const distance = Math.min(Math.max(1000, cam.near * 4), cam.far / 4);
-  const visibleWidth = 2 * distance * Math.tan(MathUtils.degToRad(cam.fov) / 2) * cam.aspect;
-  wallHolder.position.set(0, 0, -distance);
-  wallHolder.scale.setScalar((0.94 * visibleWidth) / (STAGE_W * stageObj.scale.x));
-
-  wallHolder.add(stageObj); // moves the stage off the marker anchor
-  stageEl.style.visibility = 'visible';
-  agendaOpen = false;
-  stageEl.classList.add('solo');
-  onStageFound(true);
-}
-
-function updateWall() {
-  if (!wallGroup) return;
-  if (wallMode && qNow && qPlace) {
-    // Turn the pinned agenda opposite to how the phone has turned since placing it.
-    wallGroup.quaternion.copy(qNow).invert().multiply(qPlace);
-  } else {
-    wallGroup.quaternion.identity();
+async function classifyScratch() {
+  try {
+    const tf = window.tf;
+    const out = tf.tidy(() => model.predict(tf.browser.fromPixels(scratch).toFloat().div(127).sub(1).expandDims(0)));
+    const probs = await out.data();
+    out.dispose();
+    let best = 0;
+    for (let i = 1; i < probs.length; i++) if (probs[i] > probs[best]) best = i;
+    const label = String(modelLabels[best] || '').trim().toLowerCase();
+    const item = content.hunt.find((h) => String(h.modelClass || '').trim().toLowerCase() === label);
+    const threshold = content.huntConfidence || 0.9;
+    if (scanning && item && probs[best] >= threshold) {
+      const n = (streaks.get(item.id) || 0) + 1;
+      streaks.clear();
+      streaks.set(item.id, n);
+      if (n >= 3) { // seen in 3 checks in a row (about one second) to avoid false alarms
+        stopScanning();
+        onHuntObjectFound(item);
+      }
+    } else {
+      streaks.clear();
+    }
+    window.__lastPrediction = { label, p: probs[best] };
+  } catch (e) {
+    console.warn('Hunt scan:', e);
+  } finally {
+    inferring = false;
   }
 }
 
-function showBrief(index) {
-  const s = content.sessions[index];
-  selectedSession = index;
-  stageEl.querySelectorAll('.ar-session').forEach((b) => b.classList.toggle('selected', Number(b.dataset.index) === index));
-
-  briefRoot.replaceChildren(
-    el('h2', {}, s.title),
-    el('p', { class: 'meta' }, `${s.room}  |  ${s.time}`),
-    el('p', {}, `Speaker: ${s.speaker}`),
-    el('p', {}, s.brief),
-    el('div', { class: 'ar-spacer' }),
-    el('button', { class: 'ar-pill solid wide', onclick: () => openDirections(index) }, 'Directions to the room'),
-    el('button', { class: 'ar-pill ghost wide', onclick: closeBrief }, 'Close brief'),
-  );
-  briefRoot.classList.remove('is-closed');
-  updateChrome();
-}
-
-function closeBrief() {
-  selectedSession = -1;
-  briefRoot.classList.add('is-closed');
-  stageEl.querySelectorAll('.ar-session').forEach((b) => b.classList.remove('selected'));
-  updateChrome();
-}
-
-// ---------------------------------------------------------------- hunt objects
-
-function buildHuntAnchors() {
-  for (const item of content.hunt) {
-    const anchor = mindar.addCSSAnchor(item.target);
-    const badge = el('div', { class: 'ar-badge' }, '');
-    const obj = new CSS3DObject(badge);
-    obj.position.set(0, 500 + 140, 0); // just above the card
-    anchor.group.add(obj);
-    huntBadges.set(item.id, badge);
-    refreshBadge(item);
-
-    anchor.onTargetFound = () => {
-      huntVisible.add(item.id);
-      refreshBadge(item);
-      onHuntObjectFound(item);
-      updateChrome();
-    };
-    anchor.onTargetLost = () => { huntVisible.delete(item.id); updateChrome(); };
-  }
-}
-
-function refreshBadge(item) {
-  const badge = huntBadges.get(item.id);
-  if (badge) badge.textContent = isFound(item) ? `Found: ${item.name}` : `You found: ${item.name}!`;
-}
+// ---------------------------------------------------------------- scavenger hunt
 
 function onHuntObjectFound(item) {
   if (currentSheet && currentSheet.kind === 'discovery') return;
@@ -530,7 +643,6 @@ function showDiscovery(item) {
         class: 'btn primary',
         onclick: () => {
           claim(item);
-          refreshBadge(item);
           actions.replaceChildren(
             el('p', { class: 'big' }, `+${item.points} points! Total: ${score()}`),
             el('button', { class: 'btn primary', onclick: () => continueHunt(item) }, 'Continue the hunt'),
@@ -563,6 +675,7 @@ function continueHunt(item) {
 
 function openHunt() {
   const found = content.hunt.filter(isFound).length;
+  if (modelState === 'none') ensureModel(); // start loading early, without blocking the sheet
   const list = el('ul', { class: 'list' });
   for (const item of content.hunt) {
     const done = isFound(item);
@@ -573,13 +686,17 @@ function openHunt() {
   }
   openSheet('hunt', null,
     el('h2', {}, 'Scavenger hunt'),
-    el('p', {}, 'Find the hidden objects around the venue and scan them with your camera.'),
+    el('p', {}, 'Find the hidden objects around the venue and point your camera at them.'),
     el('p', { class: 'big' }, `Your points: ${score()}   |   Found: ${found} of ${content.hunt.length}`),
     list,
-    el('button', { class: 'btn primary', onclick: closeSheet }, 'Find the objects (start scanning)'),
+    modelState === 'missing'
+      ? el('p', { class: 'note' }, 'The object detector has not been added yet. See the README: "Train the pen detector".')
+      : modelState === 'error'
+        ? el('p', { class: 'note' }, 'The object detector could not load. Reload the page and try again.')
+        : el('button', { class: 'btn primary', onclick: startScanning }, 'Find the objects (start scanning)'),
     el('button', { class: 'btn', onclick: openLeaderboard }, 'Live leaderboard'),
     el('button', { class: 'btn', onclick: closeSheet }, 'Close'),
-    el('button', { class: 'btn small', onclick: () => { resetProgress(); content.hunt.forEach(refreshBadge); openHunt(); } }, 'Reset progress (testing)'),
+    el('button', { class: 'btn small', onclick: () => { resetProgress(); openHunt(); } }, 'Reset progress (testing)'),
   );
 }
 
@@ -603,7 +720,7 @@ function openLeaderboard() {
 // ---------------------------------------------------------------- directions (2D map + steps)
 
 function directionSteps(s) {
-  const steps = [wallMode ? 'Stand with your back to the wall where you placed the agenda.' : 'Stand with your back to the painting.'];
+  const steps = ['Stand with your back to the agenda.'];
   if (s.ahead > 0) steps.push(`Walk about ${s.ahead} m straight ahead.`);
   if (s.side) steps.push(`${s.ahead > 0 ? 'Turn' : 'Go'} ${s.side > 0 ? 'right' : 'left'} and walk about ${Math.abs(s.side)} m.`);
   steps.push(`${s.room} is there.`);
@@ -626,7 +743,7 @@ function buildMap(target) {
   const X = (x) => (x - minX) * scale;
   const Y = (y) => H - (y - minY) * scale;
 
-  const map = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'map', role: 'img', 'aria-label': `Map from the poster to ${content.sessions[target].room}` });
+  const map = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'map', role: 'img', 'aria-label': `Map from the agenda to ${content.sessions[target].room}` });
   // 1 m grid
   for (let gx = Math.ceil(minX); gx <= maxX; gx++) map.append(svg('line', { x1: X(gx), y1: 0, x2: X(gx), y2: H, stroke: '#ece8f8', 'stroke-width': 1 }));
   for (let gy = Math.ceil(minY); gy <= maxY; gy++) map.append(svg('line', { x1: 0, y1: Y(gy), x2: W, y2: Y(gy), stroke: '#ece8f8', 'stroke-width': 1 }));
@@ -634,7 +751,7 @@ function buildMap(target) {
   map.append(svg('line', { x1: 0, y1: Y(0), x2: W, y2: Y(0), stroke: '#2b1a66', 'stroke-width': 3 }));
   map.append(svg('rect', { x: X(0) - 14, y: Y(0) - 3, width: 28, height: 9, fill: '#2b1a66' }));
   const posterLabel = svg('text', { x: X(0), y: Y(0) + 24, 'text-anchor': 'middle', 'font-size': 12, fill: '#6b6585' });
-  posterLabel.textContent = wallMode ? 'Agenda (start)' : 'Painting (start)';
+  posterLabel.textContent = 'Agenda (start)';
   map.append(posterLabel);
 
   // route
@@ -691,29 +808,52 @@ function closeSheet() {
 function updateChrome() {
   const banner = $('#banner');
   let hint = null;
-  if (!currentSheet && mindar) {
-    if (stageVisible && !agendaOpen) hint = 'Tap the logo to open the agenda';
-    else if (stageVisible && selectedSession < 0) hint = 'Tap a session to see its brief';
-    else if (stageVisible) hint = wallMode ? 'The brief is to the right: turn the phone right \u2192' : 'The brief is to the right of the agenda \u2192';
-    else if (huntVisible.size === 0) hint = 'Point the camera at the bird painting';
+  if (running && !currentSheet) {
+    if (scanning) {
+      hint = modelState === 'loading' ? 'Loading the object detector...' : 'Point the camera at the hidden object';
+    } else if (!placed) {
+      hint = tracking === 'NORMAL'
+        ? 'Aim at the wall, about 1.5 m away, and tap "Place here"'
+        : 'Move your phone slowly from side to side';
+    } else if (!inView) {
+      hint = 'Look around to find the agenda';
+    } else if (!agendaOpen) {
+      hint = 'Tap the logo to open the agenda';
+    } else if (selectedSession < 0) {
+      hint = 'Tap a session to see its brief';
+    } else {
+      hint = 'The brief is to the right of the agenda →';
+    }
   }
   banner.hidden = hint === null;
   if (hint) banner.textContent = hint;
 
-  $('#bar').hidden = !mindar || Boolean(currentSheet);
+  $('#bar').hidden = !running || Boolean(currentSheet);
+  $('#reticle').hidden = !running || placed || scanning || Boolean(currentSheet);
+  $('#scan-frame').hidden = !running || !scanning || Boolean(currentSheet);
+  $('#btn-place').hidden = scanning;
+  $('#btn-place').textContent = placed ? 'Move here' : 'Place here';
+  $('#btn-stop-scan').hidden = !scanning;
 }
 
 // ---------------------------------------------------------------- wire up
 
-$('#btn-start').addEventListener('click', () => start(false));
-$('#btn-start-wall').addEventListener('click', startWithoutPoster);
-$('#app-version').textContent = APP_VERSION;
-$('#btn-place').addEventListener('click', placeOnWallHere);
+$('#btn-start').addEventListener('click', start);
+$('#btn-place').addEventListener('click', placeHere);
 $('#btn-hunt').addEventListener('click', openHunt);
+$('#btn-stop-scan').addEventListener('click', stopScanning);
+$('#app-version').textContent = APP_VERSION;
 
 loadContent()
   .then((c) => { content = c; })
   .catch(() => { /* retried on Start */ });
 
-// Expose a small hook for automated testing.
-window.__ysf = { get state() { return { wallMode, placed: Boolean(qPlace), stageVisible, agendaOpen, logo: logo ? logo.phase : null, selectedSession, sheet: currentSheet, score: score(), found: foundMap() }; } };
+// A small hook for automated testing.
+window.__ysf = {
+  get state() {
+    return { running, placed, tracking, inView, agendaOpen, logo: logo ? logo.phase : null, selectedSession,
+      sheet: currentSheet, scanning, modelState, score: score(), found: foundMap() };
+  },
+  placeHere,
+  turn(radians) { if (placedGroup) placedGroup.rotation.y += radians; }, // lets a test look at the back
+};

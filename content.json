@@ -1,5 +1,7 @@
 {
   "forumTitle": "YOUTH SPEAK 27’",
+  "huntModel": "pen-model/",
+  "huntConfidence": 0.9,
   "sessions": [
     {
       "title": "Session 1",
@@ -40,36 +42,36 @@
   ],
   "hunt": [
     {
-      "target": 1,
       "id": "pen",
       "name": "Penkala's pen",
+      "modelClass": "Pen",
       "points": 100,
       "line": "Good job finding my pen! I'm Slavoljub Penkala.",
       "fact": "In Zagreb in 1906 I patented the mechanical pencil, and a year later a fountain pen with solid ink.",
       "video": "videos/hunt_pen.mp4"
     },
     {
-      "target": 2,
       "id": "tie",
       "name": "The necktie (kravata)",
+      "modelClass": "Tie",
       "points": 100,
       "line": "Good job finding the tie!",
       "fact": "In the 1600s Croatian soldiers in France wore knotted neck scarves. The French called them 'cravates', after the Croats.",
       "video": "videos/hunt_tie.mp4"
     },
     {
-      "target": 3,
       "id": "parachute",
       "name": "Vrancic's parachute",
+      "modelClass": "Parachute",
       "points": 150,
       "line": "Good job finding my parachute! I'm Faust Vrancic from Sibenik.",
       "fact": "In my book Machinae Novae (around 1615) I drew 'Homo Volans', a flying man under a square sail: an early parachute.",
       "video": "videos/hunt_parachute.mp4"
     },
     {
-      "target": 4,
       "id": "torpedo",
       "name": "The Rijeka torpedo",
+      "modelClass": "Torpedo",
       "points": 150,
       "line": "Good job finding my torpedo! I'm Ivan Lupis from Rijeka.",
       "fact": "Together with Robert Whitehead I built the first self-propelled torpedo in Rijeka in 1866.",

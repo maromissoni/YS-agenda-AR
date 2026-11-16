@@ -31,8 +31,16 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--ink); font-
 button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 [hidden] { display: none !important; }
 
-/* Camera + AR layer */
-#ar { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+/* Camera picture (drawn by the XR engine) and the HTML pinned in the room */
+#xr { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; z-index: 0; display: block; }
+#css3d { position: fixed; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; }
+#css3d > div { pointer-events: none; }
+
+/* Aiming dot before placing, and the scanning frame for the hunt */
+.reticle { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, 0.95); box-shadow: 0 0 0 2px rgba(117, 81, 204, 0.7); pointer-events: none !important; }
+.reticle span { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--brand); }
+.scan-frame { position: absolute; left: 50%; top: 50%; width: min(70vw, 70vh); aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 28px; border: 4px solid rgba(255, 255, 255, 0.9); box-shadow: 0 0 0 9999px rgba(20, 8, 60, 0.25); pointer-events: none !important; animation: scan-pulse 1.6s ease-in-out infinite; }
+@keyframes scan-pulse { 50% { border-color: rgba(157, 133, 235, 0.95); } }
 
 /* Screen UI layer: lets touches through except on its own controls */
 #ui { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
@@ -66,6 +74,9 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 .screen-card p { margin: 0; font-size: 17px; line-height: 1.45; }
 .status { color: var(--muted); font-size: 15px !important; min-height: 1.4em; }
 .status.error { color: #b3261e; }
+.credit { font-size: 12px !important; color: var(--muted); }
+.credit a { color: inherit; }
+.sheet .note { background: #fff; border-radius: 14px; padding: 12px 14px; color: var(--muted); }
 
 /* Bottom sheet */
 .sheet {
@@ -101,7 +112,15 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 /* ------------------------------------------------------------------ the AR stage
    Laid out in the pixels of the agenda design (1231 x 1727): the card is 1089 x 1360 at (0, 367),
    the logo sits on its top-right corner. While "solo", only the logo shows, large and centred. */
-.ar-stage { position: relative; width: 1231px; height: 1727px; font-family: var(--font); color: #fff; user-select: none; -webkit-user-select: none; }
+.ar-stage, .ar-back { position: relative; width: 1231px; height: 1727px; font-family: var(--font); color: #fff; user-select: none; -webkit-user-select: none; }
+
+/* The back, seen when you walk behind it: the front mirrored, without buttons */
+.ar-back { pointer-events: none; }
+.ar-back .back-logo { position: absolute; left: 17px; top: -14.5px; width: 368.5px; height: 440.6px; z-index: 2; transition: transform 650ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.ar-back.solo .back-logo { transform: translate(414px, 658px) scale(1.9); }
+.ar-back .back-card { position: absolute; left: 142px; top: 367px; width: 1089px; height: 1360px; border-radius: 112px; background: var(--card-gradient); display: flex; align-items: center; justify-content: center; transition: opacity 320ms ease; }
+.ar-back .back-card p { margin: 0; font-size: 104px; font-weight: 900; }
+.ar-back.solo .back-card { opacity: 0; }
 
 .ar-logo {
   position: absolute; left: 845.5px; top: -14.5px; width: 368.5px; height: 440.6px;
