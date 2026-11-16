@@ -13,7 +13,7 @@ import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer
 
 window.THREE = THREE; // the XR engine's three.js module looks for THREE here
 
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 
 // Real-world sizes, in metres. The agenda card in the design is 1360 px tall.
 const CARD_HEIGHT_M = 1.0;
@@ -81,6 +81,8 @@ let placedGroup = null;   // pinned in the room
 let cssScene = null;
 let cssRenderer = null;
 let xrCamera = null;
+let cameraVideo = null;   // the live camera picture (used by the pen detector)
+let renderedFrames = 0;
 
 let running = false;      // camera + tracking started
 let placed = false;
@@ -177,10 +179,12 @@ async function start() {
         XR8.XrController.updateCameraProjectionMatrix({ origin: camera.position, facing: camera.quaternion });
         running = true;
         clearTimeout(slowNote);
+        setTimeout(ensureModel, 1500); // load the pen detector in the background
         $('#start').hidden = true;
         updateChrome();
       },
-      onCameraStatusChange: ({ status }) => {
+      onCameraStatusChange: ({ status, video }) => {
+        if (status === 'hasVideo' && video) cameraVideo = video;
         if (status === 'failed') fail('The camera did not start. Allow camera access for this site in your browser settings, then reload.');
       },
       onUpdate: ({ processCpuResult }) => {
@@ -192,6 +196,7 @@ async function start() {
       },
       onRender: () => {
         if (!xrCamera) return;
+        renderedFrames++;
         updateInView();
         logo.draw();
         cssRenderer.render(cssScene, xrCamera);
@@ -281,6 +286,7 @@ function placeHere() {
 
   placedGroup.position.set(pos.x + forward.x * distance, pos.y - 0.1, pos.z + forward.z * distance);
   placedGroup.rotation.set(0, Math.atan2(-forward.x, -forward.z), 0);
+  placedGroup.updateMatrixWorld(true);
   stageObj.visible = true;
   backObj.visible = false;
 
@@ -295,17 +301,28 @@ function placeHere() {
 
 // Shows the front or the back depending on which side of it you are standing,
 // replays the logo intro when you come back to it after looking away, and saves battery while it is off-screen.
+// Points (in metres, relative to the centre of the stage) used to decide whether any part of it is on screen.
+const VIEW_POINTS = [[0, 0], [-0.4, 0.5], [0.4, 0.5], [-0.4, -0.5], [0.4, -0.5], [0.15, 0.6]];
+const BRIEF_POINTS = [[0.75, -0.1], [0.75, 0.4], [0.75, -0.6]];
 const projected = new THREE.Vector3();
 const facing = new THREE.Vector3();
+function anyPointOnScreen() {
+  const pts = selectedSession >= 0 && agendaOpen ? VIEW_POINTS.concat(BRIEF_POINTS) : VIEW_POINTS;
+  for (const [x, y] of pts) {
+    projected.set(x, y, 0);
+    placedGroup.localToWorld(projected);
+    projected.project(xrCamera);
+    if (projected.z < 1 && Math.abs(projected.x) < 1 && Math.abs(projected.y) < 1) return true;
+  }
+  return false;
+}
 function updateInView() {
   if (!placed) return;
   facing.set(0, 0, 1).applyQuaternion(placedGroup.quaternion);
   const inFront = projected.copy(xrCamera.position).sub(placedGroup.position).dot(facing) >= 0;
   if (stageObj.visible !== inFront) { stageObj.visible = inFront; backObj.visible = !inFront; }
-
-  projected.copy(placedGroup.position).project(xrCamera);
   const now = Date.now();
-  const visible = projected.z < 1 && Math.abs(projected.x) < 1.15 && Math.abs(projected.y) < 1.15;
+  const visible = anyPointOnScreen();
   if (visible && !inView) {
     inView = true;
     if (!agendaOpen && now - lastSeenAt > 3000) logo.appear(); else logo.wake();
@@ -497,66 +514,78 @@ function createLogo() {
 
 // ---------------------------------------------------------------- recognising the real pen
 // An image model in the Teachable Machine format (pen-model/): MobileNetV2 image features plus a small
-// part trained on videos of the pen and of the room without it. It looks at the middle of the camera
-// picture a few times a second. Its classes are named after the hunt objects (e.g. "Pen") plus a
-// "Nothing" class for everything else. See README: "The pen detector".
+// part trained on videos of the pen and of the room without it. It runs in a background worker
+// (pen-worker.js) on the processor, so it cannot slow down or freeze the AR view. A few times a second
+// the middle of the camera picture is sent to it. Its classes are named after the hunt objects
+// (e.g. "Pen") plus a "Nothing" class. See README: "The pen detector".
 
 const SCAN_EVERY_MS = 350;
+const LOAD_TIMEOUT_MS = 45000;
 let scanning = false;
 let modelState = 'none'; // none | loading | ready | missing | error
-let model = null;
 let modelLabels = [];
 let modelSize = 224;
-let modelPromise = null;
+let worker = null;
+let loadTimer = 0;
 let lastGrab = 0;
 let inferring = false;
+let inferringSince = 0;
 const streaks = new Map();
 let scratch = null;
 
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error(`could not load ${src}`));
-    document.head.append(s);
-  });
-}
-
 function modelBase() {
   const base = content.huntModel || 'pen-model/';
-  return base.endsWith('/') ? base : `${base}/`;
+  return new URL(base.endsWith('/') ? base : `${base}/`, location.href).href;
+}
+
+function setModelState(state) {
+  modelState = state;
+  if (currentSheet && currentSheet.kind === 'hunt') openHunt();
+  updateChrome();
 }
 
 function ensureModel() {
-  if (modelPromise) return modelPromise;
+  if (!content || modelState === 'loading' || modelState === 'ready') return;
+  if (worker) worker.terminate();
   modelState = 'loading';
-  modelPromise = (async () => {
-    const res = await fetch(`${modelBase()}metadata.json`, { cache: 'no-cache' });
-    if (!res.ok) { modelState = 'missing'; return; }
-    const meta = await res.json();
-    if (!window.tf) await loadScript('lib/tf/tf.min.js');
-    model = await window.tf.loadLayersModel(`${modelBase()}model.json`);
-    modelLabels = meta.labels || [];
-    modelSize = meta.imageSize || 224;
-    window.tf.tidy(() => model.predict(window.tf.zeros([1, modelSize, modelSize, 3]))); // warm up
-    modelState = 'ready';
-  })().catch((e) => {
-    console.warn('Hunt model:', e);
-    modelState = 'error';
-  }).finally(() => {
-    if (modelState !== 'ready') modelPromise = null; // allow a retry later
-    if (currentSheet && currentSheet.kind === 'hunt') openHunt();
-    updateChrome();
-  });
-  return modelPromise;
+  updateChrome();
+  try {
+    worker = new Worker('pen-worker.js?v=9');
+  } catch (e) {
+    console.warn('Hunt worker:', e);
+    setModelState('error');
+    return;
+  }
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === 'ready') {
+      clearTimeout(loadTimer);
+      modelLabels = msg.labels;
+      modelSize = msg.size;
+      setModelState('ready');
+    } else if (msg.type === 'missing') {
+      clearTimeout(loadTimer);
+      setModelState('missing');
+    } else if (msg.type === 'error') {
+      console.warn('Hunt detector:', msg.message);
+      inferring = false;
+      if (msg.during !== 'classify') { clearTimeout(loadTimer); setModelState('error'); }
+    } else if (msg.type === 'result') {
+      inferring = false;
+      handlePrediction(msg.probs, msg.ms);
+    }
+  };
+  worker.onerror = (e) => { console.warn('Hunt worker error:', e.message); clearTimeout(loadTimer); setModelState('error'); };
+  worker.postMessage({ type: 'load', base: modelBase(), wasmBase: new URL('lib/tf/', location.href).href });
+  clearTimeout(loadTimer);
+  loadTimer = setTimeout(() => { if (modelState === 'loading') setModelState('error'); }, LOAD_TIMEOUT_MS);
 }
 
 function startScanning() {
   closeSheet();
   streaks.clear();
   scanning = true;
-  ensureModel();
+  if (modelState !== 'ready') ensureModel();
   updateChrome();
 }
 
@@ -566,47 +595,46 @@ function stopScanning() {
   updateChrome();
 }
 
-// Called right after the camera picture is drawn, while it can still be read.
+// The middle square of what the screen shows, taken from the camera video (cheap, no graphics read-back).
 function grabScanFrame() {
   const now = Date.now();
+  if (inferring && now - inferringSince > 3000) inferring = false; // never wait forever for an answer
   if (modelState !== 'ready' || inferring || now - lastGrab < SCAN_EVERY_MS) return;
+  const v = cameraVideo;
+  if (!v || v.readyState < 2 || !v.videoWidth) return;
   lastGrab = now;
-  const src = $('#xr');
+  const vw = v.videoWidth, vh = v.videoHeight;
+  // The video fills the screen and is cropped at the sides or the top and bottom.
+  const scale = Math.max(window.innerWidth / vw, window.innerHeight / vh);
+  const side = Math.min(window.innerWidth, window.innerHeight) / scale;
   if (!scratch) scratch = document.createElement('canvas');
   scratch.width = scratch.height = modelSize;
-  const side = Math.min(src.width, src.height);
-  scratch.getContext('2d').drawImage(src, (src.width - side) / 2, (src.height - side) / 2, side, side, 0, 0, modelSize, modelSize);
+  const ctx = scratch.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(v, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, modelSize, modelSize);
+  const pixels = ctx.getImageData(0, 0, modelSize, modelSize).data.buffer;
   inferring = true;
-  setTimeout(classifyScratch, 0);
+  inferringSince = now;
+  worker.postMessage({ type: 'classify', pixels }, [pixels]);
 }
 
-async function classifyScratch() {
-  try {
-    const tf = window.tf;
-    const out = tf.tidy(() => model.predict(tf.browser.fromPixels(scratch).toFloat().div(127).sub(1).expandDims(0)));
-    const probs = await out.data();
-    out.dispose();
-    let best = 0;
-    for (let i = 1; i < probs.length; i++) if (probs[i] > probs[best]) best = i;
-    const label = String(modelLabels[best] || '').trim().toLowerCase();
-    const item = content.hunt.find((h) => String(h.modelClass || '').trim().toLowerCase() === label);
-    const threshold = content.huntConfidence || 0.9;
-    if (scanning && item && probs[best] >= threshold) {
-      const n = (streaks.get(item.id) || 0) + 1;
-      streaks.clear();
-      streaks.set(item.id, n);
-      if (n >= 3) { // seen in 3 checks in a row (about one second) to avoid false alarms
-        stopScanning();
-        onHuntObjectFound(item);
-      }
-    } else {
-      streaks.clear();
+function handlePrediction(probs, ms) {
+  let best = 0;
+  for (let i = 1; i < probs.length; i++) if (probs[i] > probs[best]) best = i;
+  const label = String(modelLabels[best] || '').trim().toLowerCase();
+  window.__lastPrediction = { label, p: probs[best], ms };
+  if (!scanning) return;
+  const item = content.hunt.find((h) => String(h.modelClass || '').trim().toLowerCase() === label);
+  const threshold = content.huntConfidence || 0.9;
+  if (item && probs[best] >= threshold) {
+    const n = (streaks.get(item.id) || 0) + 1;
+    streaks.clear();
+    streaks.set(item.id, n);
+    if (n >= 3) { // seen in 3 checks in a row (about one second) to avoid false alarms
+      stopScanning();
+      onHuntObjectFound(item);
     }
-    window.__lastPrediction = { label, p: probs[best] };
-  } catch (e) {
-    console.warn('Hunt scan:', e);
-  } finally {
-    inferring = false;
+  } else {
+    streaks.clear();
   }
 }
 
@@ -693,7 +721,7 @@ function openHunt() {
     modelState === 'missing'
       ? el('p', { class: 'note' }, 'The object detector has not been added yet. See the README: "Train the pen detector".')
       : modelState === 'error'
-        ? el('p', { class: 'note' }, 'The object detector could not load. Reload the page and try again.')
+        ? el('button', { class: 'btn primary', onclick: () => { modelState = 'none'; startScanning(); } }, 'Try loading the object detector again')
         : el('button', { class: 'btn primary', onclick: startScanning }, 'Find the objects (start scanning)'),
     el('button', { class: 'btn', onclick: openLeaderboard }, 'Live leaderboard'),
     el('button', { class: 'btn', onclick: closeSheet }, 'Close'),
@@ -811,7 +839,9 @@ function updateChrome() {
   let hint = null;
   if (running && !currentSheet) {
     if (scanning) {
-      hint = modelState === 'loading' ? 'Loading the object detector...' : 'Point the camera at the hidden object';
+      hint = modelState === 'loading' ? 'Loading the object detector... (a few seconds the first time)'
+        : modelState === 'error' ? 'The object detector could not load. Tap "Stop scanning" and try again.'
+        : 'Point the camera at the hidden object';
     } else if (!placed) {
       hint = tracking === 'NORMAL'
         ? 'Aim at the wall, about 1.5 m away, and tap "Place here"'
@@ -840,6 +870,9 @@ function updateChrome() {
 // ---------------------------------------------------------------- wire up
 
 $('#btn-start').addEventListener('click', start);
+// iPhone ignores "no zoom" in the page settings: block pinch and double-tap zoom so the view stays put.
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
 $('#btn-place').addEventListener('click', placeHere);
 $('#btn-hunt').addEventListener('click', openHunt);
 $('#btn-stop-scan').addEventListener('click', stopScanning);
@@ -853,7 +886,7 @@ loadContent()
 window.__ysf = {
   get state() {
     return { running, placed, tracking, inView, agendaOpen, logo: logo ? logo.phase : null, selectedSession,
-      sheet: currentSheet, scanning, modelState, score: score(), found: foundMap() };
+      sheet: currentSheet, scanning, modelState, frames: renderedFrames, score: score(), found: foundMap() };
   },
   placeHere,
   turn(radians) { if (placedGroup) placedGroup.rotation.y += radians; }, // lets a test look at the back

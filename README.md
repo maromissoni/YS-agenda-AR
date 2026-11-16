@@ -12,7 +12,7 @@ Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, 
 
 1. If they are still there from version 6 or older, delete `lib/mindar`, `markers`, `print` and `targets.mind` in your repository (… menu → Delete). They are no longer used.
 2. Click **Add file → Upload files**, select **everything inside this folder** (Cmd+A) and drag it in. Use Chrome so the folders upload too.
-3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v8**.
+3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v9**.
 
 The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first time.
 
@@ -36,6 +36,7 @@ The `pen-model` folder already contains a detector trained on your two videos: t
 - It only saw the pen lying on that white desk. It may miss it somewhere very different (a dark shelf, in someone's hand, in dim light).
 - This is an ordinary blue-capped ballpoint, so it may also react to other pens of the same kind. At the forum, use a pen nobody else will have, or keep similar pens away from the hiding spot.
 - It must see the pen in the middle of the screen for about a second before it counts.
+- It starts loading in the background as soon as the camera is on, so it is usually ready by the time you open the hunt.
 
 **To improve it**, film 20–30 seconds of the pen in its real hiding spot at the venue (different angles and distances, keep it near the middle), plus 20–30 seconds of the same area without it, and have it retrained.
 
@@ -75,6 +76,7 @@ Export an `.mp4` (H.264, 16:9, under about 20 seconds and 10 MB), name it `hunt_
 | `fonts/` | Lato |
 | `videos/` | Hunt character videos |
 | `lib/xr/` | 8th Wall XR Engine (world tracking) and its licence – do not edit |
+| `pen-worker.js` | Runs the pen detector in the background so it never slows down the AR view |
 | `lib/three/`, `lib/tf/` | three.js and TensorFlow.js – do not edit |
 | `manifest.webmanifest`, `icons/` | Lets people add the app to their home screen |
 
