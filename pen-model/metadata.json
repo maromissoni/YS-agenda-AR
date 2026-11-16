@@ -1,0 +1,9 @@
+{
+  "labels": [
+    "Nothing",
+    "Pen"
+  ],
+  "imageSize": 224,
+  "modelName": "youthspeak-pen",
+  "notes": "MobileNetV2 (ImageNet, ONNX Model Zoo, Apache-2.0) features + trained pen head"
+}

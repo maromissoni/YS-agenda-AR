@@ -13,7 +13,7 @@ import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer
 
 window.THREE = THREE; // the XR engine's three.js module looks for THREE here
 
-const APP_VERSION = 'v7';
+const APP_VERSION = 'v8';
 
 // Real-world sizes, in metres. The agenda card in the design is 1360 px tall.
 const CARD_HEIGHT_M = 1.0;
@@ -496,9 +496,10 @@ function createLogo() {
 }
 
 // ---------------------------------------------------------------- recognising the real pen
-// A small image model trained in Google Teachable Machine (free). It looks at the middle of the camera
+// An image model in the Teachable Machine format (pen-model/): MobileNetV2 image features plus a small
+// part trained on videos of the pen and of the room without it. It looks at the middle of the camera
 // picture a few times a second. Its classes are named after the hunt objects (e.g. "Pen") plus a
-// "Nothing" class for everything else. See README: "Train the pen detector".
+// "Nothing" class for everything else. See README: "The pen detector".
 
 const SCAN_EVERY_MS = 350;
 let scanning = false;

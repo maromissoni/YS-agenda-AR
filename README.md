@@ -4,15 +4,15 @@ An AR agenda and scavenger hunt that runs in the phone's browser (Safari on iPho
 
 **The flow:** aim at a wall and tap **Place here** → the Youth Speak logo animates in, pinned in that spot in the room, and keeps looping → tap the logo → the agenda opens → tap a session for its brief and directions. Walk around it, even behind it: it stays where you put it.
 
-**Scavenger hunt:** point the camera at the real pen. A small image model you train yourself recognises it, and Penkala's panel appears.
+**Scavenger hunt:** point the camera at the real pen. An image model trained on your pen videos recognises it, and Penkala's panel appears.
 
 Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, free licence), 3D (three.js, MIT), object recognition (TensorFlow.js, Apache 2.0) and the Lato font (Open Font License). All of it is included in this folder.
 
 ## Update the version that is already online
 
-1. In your GitHub repository, **delete the old folders first**: open `lib/mindar`, `markers`, `print` and the file `targets.mind`, and delete each (… menu → Delete). They are no longer used.
+1. If they are still there from version 6 or older, delete `lib/mindar`, `markers`, `print` and `targets.mind` in your repository (… menu → Delete). They are no longer used.
 2. Click **Add file → Upload files**, select **everything inside this folder** (Cmd+A) and drag it in. Use Chrome so the folders upload too.
-3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v7**.
+3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v8**.
 
 The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first time.
 
@@ -28,25 +28,22 @@ The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first tim
 - Tracking is steadiest in good light with some objects in view (floor, furniture, doors). In a bare white corridor it can drift.
 - The agenda card is about 1 m tall. To change it, edit `CARD_HEIGHT_M` near the top of `app.js`.
 
-## Train the pen detector (free, about 20 minutes)
+## The pen detector
 
-The app recognises the pen with a small model made in **Google Teachable Machine**. The model learns your pen from photos, so it only knows the pen you train it on.
+The `pen-model` folder already contains a detector trained on your two videos: the blue-capped ballpoint on the office desk, and the office without it. In a test with those videos as the camera, it ignored about 30 seconds of the room and recognised the pen about 3 seconds after it came into view.
 
-1. Go to **teachablemachine.withgoogle.com** → **Get Started** → **Image Project** → **Standard image model**.
-2. Rename *Class 1* to **Pen** and *Class 2* to **Nothing**. The name **Pen** must match `modelClass` in `content.json`.
-3. **Pen** class: add 200–400 photos of the pen. Use **Webcam** on a laptop (hold the button to record) or **Upload** photos taken with your phone.
-   - Show the pen at different distances, angles and lighting, in your hand and in its hiding spot.
-   - Keep the pen near the middle of the picture: the app only looks at the middle of the camera view.
-4. **Nothing** class: add as many photos of everything else: the walls, the floor, the room, people, hands without the pen, and **other pens** if they might be around.
-5. Click **Train Model**, then test it in the **Preview** panel. Add more photos where it gets confused and train again.
-6. Click **Export Model** → **Tensorflow.js**, then either:
-   - **Download**: click *Download my model*, unzip it, and upload `model.json`, `metadata.json` and `weights.bin` into the `pen-model` folder of your repository; or
-   - **Upload (shareable link)**: click *Upload my model*, copy the link, and put it in `content.json` as `"huntModel": "https://teachablemachine.withgoogle.com/models/…/"`.
-7. Open the app → **Scavenger hunt** → **Find the objects** and point at the pen. It must see the pen for about one second before it counts.
+**What it has learned, and what not yet**
+- It only saw the pen lying on that white desk. It may miss it somewhere very different (a dark shelf, in someone's hand, in dim light).
+- This is an ordinary blue-capped ballpoint, so it may also react to other pens of the same kind. At the forum, use a pen nobody else will have, or keep similar pens away from the hiding spot.
+- It must see the pen in the middle of the screen for about a second before it counts.
 
-If it triggers on the wrong things, raise `huntConfidence` in `content.json` (for example 0.95) and add more photos to **Nothing**. If it misses the real pen, lower it (for example 0.8) and add more photos to **Pen**.
+**To improve it**, film 20–30 seconds of the pen in its real hiding spot at the venue (different angles and distances, keep it near the middle), plus 20–30 seconds of the same area without it, and have it retrained.
 
-The other hunt objects work the same way: add a class named **Tie**, **Parachute** or **Torpedo** in the same model. A hunt object without a class in the model simply can't be found yet.
+**Tuning:** if it triggers on the wrong things, raise `huntConfidence` in `content.json` (for example 0.95). If it misses the real pen, lower it (for example 0.8).
+
+**Other objects:** the detector has the classes **Pen** and **Nothing**. The tie, parachute and torpedo need their own videos and a retrain before they can be found.
+
+**Do it yourself instead (optional):** a model made in Google Teachable Machine (teachablemachine.withgoogle.com → Image Project → classes **Pen** and **Nothing** → Train → Export → Tensorflow.js) works too. Upload its `model.json`, `metadata.json` and `weights.bin` into `pen-model`, replacing these.
 
 ## Change the content (no code)
 
@@ -73,7 +70,7 @@ Export an `.mp4` (H.264, 16:9, under about 20 seconds and 10 MB), name it `hunt_
 | --- | --- |
 | `index.html`, `style.css`, `app.js` | The app |
 | `content.json` | Agenda, hunt objects and settings – edit this |
-| `pen-model/` | The pen detector from Teachable Machine (you add it) |
+| `pen-model/` | The pen detector (trained on your videos) |
 | `logo/` | The logo animations and still |
 | `fonts/` | Lato |
 | `videos/` | Hunt character videos |
@@ -84,3 +81,5 @@ Export an `.mp4` (H.264, 16:9, under about 20 seconds and 10 MB), name it `hunt_
 ## Credits
 
 This product includes the XR Engine software developed by Niantic Spatial, Inc. Copyright © 2026 Niantic Spatial, Inc. Licensed under the XR Engine License Agreement (`lib/xr/LICENSE`), which includes the disclaimer of warranties. The licence allows free use as part of a larger project like this one; keep this notice and the licence file with the app.
+
+The pen detector is built on MobileNetV2 from the ONNX Model Zoo (Apache License 2.0).
