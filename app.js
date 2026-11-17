@@ -1,6 +1,7 @@
 // Youth Speak AR - web app.
 // Flow: Start -> aim at a wall and tap "Place here" -> the logo animates in, pinned in the room, and loops
 //       -> tap the logo -> the agenda opens -> tap a session -> brief -> directions.
+//       Portal (bottom bar): rings burst out of the logo into a tunnel you can stand in; take a photo.
 //       Scavenger hunt: point the camera at the real pen -> a trained image model recognises it -> claim points.
 //
 // World tracking: 8th Wall XR Engine (lib/xr). This product includes the XR Engine software developed by
@@ -12,7 +13,7 @@ import * as THREE from 'three';
 
 window.THREE = THREE; // the XR engine's three.js module looks for THREE here
 
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 
 // Size: when placed, the agenda card fills this share of the screen width (0.5 = half).
 // Larger = bigger agenda. With the brief open, card + brief together fill about twice this.
@@ -170,6 +171,7 @@ async function start() {
         camera.position.set(0, EYE_HEIGHT_M, 0);
         XR8.XrController.updateCameraProjectionMatrix({ origin: camera.position, facing: camera.quaternion });
         attachStage(scene, renderer);
+        buildPortal(scene);
         running = true;
         runningSince = Date.now();
         clearTimeout(slowNote);
@@ -199,6 +201,7 @@ async function start() {
       onRender: () => {
         if (!xrCamera) return;
         renderedFrames++;
+        if (photoWanted) capturePhoto();
         if (scanning) grabScanFrame();
       },
       onException: (e) => {
@@ -514,6 +517,7 @@ function updateStage() {
   const now = performance.now();
   const dt = lastFrameAt ? Math.min(100, now - lastFrameAt) : 16;
   lastFrameAt = now;
+  updatePortal(dt);
   openT = Math.min(1, Math.max(0, openT + (agendaOpen ? 1 : -1) * (dt / OPEN_MS)));
   const briefWanted = agendaOpen && selectedSession >= 0;
   briefT = Math.min(1, Math.max(0, briefT + (briefWanted ? 1 : -1) * (dt / BRIEF_MS)));
@@ -554,10 +558,12 @@ let normalSince = 0;
 let runningSince = 0;
 const TRACKING_SETTLE_MS = 1000;
 const TRACKING_GIVE_UP_MS = 12000; // after this, placing is allowed anyway
+let wasSteady = false; // once tracking has been steady, placing stays allowed even if it flickers
 function trackingReady() {
+  if (wasSteady) return true;
   const now = Date.now();
-  if (tracking === 'NORMAL' && normalSince && now - normalSince >= TRACKING_SETTLE_MS) return true;
-  return runningSince > 0 && now - runningSince > TRACKING_GIVE_UP_MS;
+  if (tracking === 'NORMAL' && normalSince && now - normalSince >= TRACKING_SETTLE_MS) wasSteady = true;
+  return wasSteady || (runningSince > 0 && now - runningSince > TRACKING_GIVE_UP_MS);
 }
 
 // Pin the stage upright, facing you, on the wall you are aiming at, sized to fit the screen.
@@ -597,6 +603,9 @@ function placeHere() {
 
   placed = true;
   agendaOpen = false;
+  portalOpen = false;
+  portalT = 0;
+  if (portal) portal.group.visible = false;
   selectedSession = -1;
   openT = 0;
   briefT = 0;
@@ -691,6 +700,7 @@ function updateInView() {
 }
 
 function openAgenda() {
+  if (portalOpen) closePortal();
   agendaOpen = true;
   updateChrome();
 }
@@ -716,6 +726,337 @@ function closeBrief() {
   selectedSession = -1;
   drawCard();
   updateChrome();
+}
+
+// ---------------------------------------------------------------- the portal
+// "Portal" in the bottom bar: rings in the Youth Speak colours burst out of the logo and form a tunnel
+// in the room, big enough to stand in. They stay pinned like the agenda, so you can walk around and
+// through them. "Take photo" saves the view with a small Youth Speak frame.
+
+const PORTAL_RINGS = 9;
+const PORTAL_OPEN_MS = 1700, PORTAL_CLOSE_MS = 700;
+const PORTAL_FRONT_M = 0.8;      // how far the tunnel reaches out from the wall
+const PORTAL_CENTRE_M = 1.05;    // height of the tunnel's middle near you (a standing person fits inside)
+const RING_PALETTE = {
+  purple: '#7551cc', light: '#9d85eb', deep: '#442997', mid: '#5a3bb2',
+  ink: '#2b1a66', lavender: '#e6dff8', white: '#ffffff',
+};
+// Front to back, these are the patterns. Each ring: pattern, inner hole (share of the radius), colours.
+const RING_DESIGNS = [
+  { kind: 'checker', hole: 0.72, a: RING_PALETTE.ink, b: RING_PALETTE.white },
+  { kind: 'flower', hole: 0.66, a: RING_PALETTE.light, b: RING_PALETTE.white },
+  { kind: 'text', hole: 0.8, a: RING_PALETTE.deep, b: RING_PALETTE.white },
+  { kind: 'sunburst', hole: 0.62, a: RING_PALETTE.purple, b: RING_PALETTE.lavender },
+  { kind: 'logos', hole: 0.7, a: RING_PALETTE.white, b: RING_PALETTE.purple },
+  { kind: 'zigzag', hole: 0.68, a: RING_PALETTE.mid, b: RING_PALETTE.white },
+  { kind: 'stripes', hole: 0.6, a: RING_PALETTE.ink, b: RING_PALETTE.light },
+  { kind: 'dots', hole: 0.7, a: RING_PALETTE.purple, b: RING_PALETTE.white },
+  { kind: 'checker', hole: 0.64, a: RING_PALETTE.deep, b: RING_PALETTE.lavender },
+];
+
+let portal = null;        // { group, rings: [{ mesh, from, to, size, spin, delay }] }
+let portalOpen = false;
+let portalT = 0;          // 0 = closed, 1 = fully out (animated)
+let photoWanted = false;
+let lastPhoto = null;     // { url, blob }
+
+const logoStill = new Image();
+logoStill.src = 'logo/logo.png';
+
+// Paths for one wedge of an annulus.
+function wedge(ctx, c, r0, r1, a0, a1) {
+  ctx.beginPath();
+  ctx.arc(c, c, r1, a0, a1);
+  ctx.arc(c, c, r0, a1, a0, true);
+  ctx.closePath();
+}
+
+function drawRingTexture(design) {
+  const S = 512, c = S / 2, R = 250, r = R * design.hole;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  const { a, b } = design;
+  const band = R - r;
+
+  switch (design.kind) {
+    case 'checker': {
+      const segs = 28, rows = 2;
+      for (let row = 0; row < rows; row++) {
+        const r0 = r + (band * row) / rows, r1 = r + (band * (row + 1)) / rows;
+        for (let s = 0; s < segs; s++) {
+          ctx.fillStyle = (s + row) % 2 ? a : b;
+          wedge(ctx, c, r0, r1, (s / segs) * Math.PI * 2, ((s + 1) / segs) * Math.PI * 2 + 0.002);
+          ctx.fill();
+        }
+      }
+      break;
+    }
+    case 'sunburst': {
+      const segs = 40;
+      for (let s = 0; s < segs; s++) {
+        ctx.fillStyle = s % 2 ? a : b;
+        wedge(ctx, c, r, R, (s / segs) * Math.PI * 2, ((s + 1) / segs) * Math.PI * 2 + 0.002);
+        ctx.fill();
+      }
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = RING_PALETTE.ink;
+      for (const rr of [r + 3, R - 3]) { ctx.beginPath(); ctx.arc(c, c, rr, 0, Math.PI * 2); ctx.stroke(); }
+      break;
+    }
+    case 'stripes': {
+      const n = 7;
+      for (let i = n - 1; i >= 0; i--) {
+        ctx.fillStyle = i % 2 ? a : b;
+        ctx.beginPath();
+        ctx.arc(c, c, r + (band * (i + 1)) / n, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath(); ctx.arc(c, c, r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      break;
+    }
+    case 'flower': {
+      const petals = 14, pr = band * 0.42;
+      ctx.fillStyle = a;
+      ctx.beginPath(); ctx.arc(c, c, R - pr, 0, Math.PI * 2); ctx.fill();
+      for (let i = 0; i < petals; i++) {
+        const ang = (i / petals) * Math.PI * 2;
+        ctx.beginPath(); ctx.arc(c + Math.cos(ang) * (R - pr), c + Math.sin(ang) * (R - pr), pr, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = b;
+      for (let i = 0; i < petals; i++) {
+        const ang = (i / petals) * Math.PI * 2;
+        ctx.beginPath(); ctx.arc(c + Math.cos(ang) * (R - pr), c + Math.sin(ang) * (R - pr), pr * 0.32, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = RING_PALETTE.deep;
+      ctx.beginPath(); ctx.arc(c, c, r + band * 0.22, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath(); ctx.arc(c, c, r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      break;
+    }
+    case 'zigzag': {
+      ctx.fillStyle = a;
+      wedge(ctx, c, r, R, 0, Math.PI * 2); ctx.fill();
+      const teeth = 30, mid = r + band / 2, h = band * 0.34;
+      ctx.fillStyle = b;
+      ctx.beginPath();
+      for (let i = 0; i <= teeth * 2; i++) {
+        const ang = (i / (teeth * 2)) * Math.PI * 2;
+        const rr = i % 2 ? mid + h : mid - h;
+        const x = c + Math.cos(ang) * rr, y = c + Math.sin(ang) * rr;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      for (let i = teeth * 2; i >= 0; i--) {
+        const ang = (i / (teeth * 2)) * Math.PI * 2 + 0.06;
+        const rr = (i % 2 ? mid + h : mid - h) - band * 0.16;
+        ctx.lineTo(c + Math.cos(ang) * rr, c + Math.sin(ang) * rr);
+      }
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'dots': {
+      ctx.fillStyle = a;
+      wedge(ctx, c, r, R, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = b;
+      for (const [rr, n, size, off] of [[r + band * 0.3, 22, band * 0.13, 0], [r + band * 0.72, 30, band * 0.12, 0.5]]) {
+        for (let i = 0; i < n; i++) {
+          const ang = ((i + off) / n) * Math.PI * 2;
+          ctx.beginPath(); ctx.arc(c + Math.cos(ang) * rr, c + Math.sin(ang) * rr, size, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      break;
+    }
+    case 'text': {
+      ctx.fillStyle = a;
+      wedge(ctx, c, r, R, 0, Math.PI * 2); ctx.fill();
+      const words = `${content.forumTitle}  •  `.repeat(3);
+      const size = band * 0.62;
+      ctx.font = font(900, size);
+      ctx.fillStyle = b;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const rr = r + band / 2;
+      const total = ctx.measureText(words).width;
+      const fit = (Math.PI * 2 * rr) / total; // squeeze or stretch the letters to go exactly once around
+      let ang = -Math.PI / 2;
+      for (const ch of words) {
+        const w = ctx.measureText(ch).width * fit;
+        ang += w / rr / 2;
+        ctx.save();
+        ctx.translate(c + Math.cos(ang) * rr, c + Math.sin(ang) * rr);
+        ctx.rotate(ang + Math.PI / 2);
+        ctx.fillText(ch, 0, 0);
+        ctx.restore();
+        ang += w / rr / 2;
+      }
+      break;
+    }
+    case 'logos': {
+      ctx.fillStyle = a;
+      wedge(ctx, c, r, R, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = b;
+      for (const rr of [r + 4, R - 4]) { ctx.beginPath(); ctx.arc(c, c, rr, 0, Math.PI * 2); ctx.stroke(); }
+      const n = 11, h = band * 0.78, w = h * (LOGO_W / LOGO_H);
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * Math.PI * 2;
+        ctx.save();
+        ctx.translate(c + Math.cos(ang) * (r + band / 2), c + Math.sin(ang) * (r + band / 2));
+        ctx.rotate(ang + Math.PI / 2);
+        if (logoStill.complete && logoStill.naturalWidth) ctx.drawImage(logoStill, -w / 2, -h / 2, w, h);
+        else { ctx.fillStyle = b; ctx.beginPath(); ctx.arc(0, 0, h / 3, 0, Math.PI * 2); ctx.fill(); }
+        ctx.restore();
+      }
+      break;
+    }
+    default: break;
+  }
+  return cv;
+}
+
+async function buildPortal(scene) {
+  try { await logoStill.decode(); } catch { /* the logo ring falls back to dots */ }
+  const group = new THREE.Group();
+  group.visible = false;
+  const rings = RING_DESIGNS.slice(0, PORTAL_RINGS).map((design, i) => {
+    const tex = makeTexture(drawRingTexture(design));
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
+    );
+    mesh.renderOrder = 3;
+    group.add(mesh);
+    return { mesh, index: i, spin: (i % 2 ? -1 : 1) * (0.25 + ((i * 37) % 10) / 16), angle: i * 0.7 };
+  });
+  scene.add(group);
+  portal = { group, rings };
+}
+
+// The tunnel's shape: from the logo on the wall (small, high) out to you (big, at the height of a person).
+function ringTarget(i, n, logoHeight) {
+  const t = n === 1 ? 1 : i / (n - 1);              // 0 = at the wall, 1 = nearest to you
+  const front = n - 1 - i;                          // RING_DESIGNS is listed front first
+  return {
+    z: 0.08 + t * (PORTAL_FRONT_M - 0.08),
+    y: mix(logoHeight, PORTAL_CENTRE_M, Math.pow(t, 0.8)),
+    x: Math.sin(front * 1.9) * 0.14 * t,
+    tiltX: Math.sin(front * 2.3 + 1) * 0.32,   // rings lean a little in different directions,
+    tiltY: Math.cos(front * 1.7) * 0.42,       // like the loose stack in the reference video
+    size: mix(0.55, 1.95, t),
+  };
+}
+
+function openPortal() {
+  if (!placed || !portal) return;
+  if (agendaOpen) closeAgenda();
+  selectedSession = -1;
+  // The tunnel starts at the logo and points out of the wall, towards where you placed it from.
+  portal.group.position.set(placedGroup.position.x, 0, placedGroup.position.z);
+  portal.group.rotation.set(0, placedGroup.rotation.y, 0);
+  portal.logoHeight = placedGroup.position.y;
+  portal.group.visible = true;
+  portalOpen = true;
+  updateChrome();
+}
+
+function closePortal() {
+  portalOpen = false;
+  updateChrome();
+}
+
+function togglePortal() {
+  if (portalOpen) closePortal(); else openPortal();
+}
+
+function updatePortal(dt) {
+  if (!portal) return;
+  const before = portalT;
+  portalT = Math.min(1, Math.max(0, portalT + (portalOpen ? dt / PORTAL_OPEN_MS : -dt / PORTAL_CLOSE_MS)));
+  if (portalT === 0) {
+    if (before !== 0 || portal.group.visible) portal.group.visible = false;
+    return;
+  }
+  const n = portal.rings.length;
+  for (const ring of portal.rings) {
+    // Rings are listed front first; the ones nearest the wall come out first.
+    const order = n - 1 - ring.index;
+    const goal = ringTarget(order, n, portal.logoHeight);
+    const delay = (order / n) * 0.45;
+    const local = Math.min(1, Math.max(0, (portalT - delay) / (1 - delay)));
+    const e = portalOpen ? easeOutBack(local) : ease(local);
+    ring.angle += (ring.spin * dt) / 1000 * (1 + (1 - local) * 6); // spins fast while bursting out
+    ring.mesh.position.set(goal.x * e, mix(portal.logoHeight, goal.y, e), mix(0.03, goal.z, e));
+    const sway = Math.sin(performance.now() / 900 + ring.index) * 0.06;
+    ring.mesh.rotation.set((goal.tiltX + sway) * e, (goal.tiltY - sway) * e, ring.angle);
+    const s = Math.max(0.001, goal.size * mix(0.12, 1, e));
+    ring.mesh.scale.set(s, s, 1);
+    ring.mesh.material.opacity = Math.min(1, local * 3);
+    ring.mesh.visible = local > 0;
+  }
+}
+
+function easeOutBack(t) {
+  const k = 1.4;
+  const u = t - 1;
+  return 1 + (k + 1) * u * u * u + k * u * u;
+}
+
+// ---------------------------------------------------------------- taking a photo
+
+function takePhoto() {
+  if (!running) return;
+  photoWanted = true; // the picture is copied right after the next frame is drawn (see onRender)
+}
+
+function capturePhoto() {
+  photoWanted = false;
+  const src = $('#xr');
+  const w = src.width, h = src.height;
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const ctx = out.getContext('2d');
+  try { ctx.drawImage(src, 0, 0, w, h); } catch (e) { console.warn('Photo:', e); return; }
+
+  // A small Youth Speak frame along the bottom.
+  const u = w / 390;
+  const barH = 64 * u;
+  const g = ctx.createLinearGradient(0, h - barH * 1.8, 0, h);
+  g.addColorStop(0, 'rgba(43, 26, 102, 0)');
+  g.addColorStop(1, 'rgba(43, 26, 102, 0.75)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, h - barH * 1.8, w, barH * 1.8);
+  const lh = 46 * u, lw = lh * (LOGO_W / LOGO_H);
+  if (logoStill.complete && logoStill.naturalWidth) ctx.drawImage(logoStill, 16 * u, h - barH + (barH - lh) / 2 - 6 * u, lw, lh);
+  ctx.fillStyle = '#fff';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.font = font(900, 22 * u);
+  ctx.fillText(content.forumTitle, 16 * u + lw + 10 * u, h - barH / 2 - 6 * u);
+
+  const url = out.toDataURL('image/jpeg', 0.9);
+  out.toBlob((blob) => {
+    lastPhoto = { url, blob };
+    showPhoto();
+  }, 'image/jpeg', 0.9);
+}
+
+function showPhoto() {
+  if (!lastPhoto) return;
+  const file = lastPhoto.blob ? new File([lastPhoto.blob], 'youth-speak-portal.jpg', { type: 'image/jpeg' }) : null;
+  const canShare = file && navigator.canShare && navigator.canShare({ files: [file] });
+  openSheet('photo', null,
+    el('h2', {}, 'Your portal photo'),
+    el('img', { class: 'photo', src: lastPhoto.url, alt: 'Photo of the Youth Speak portal' }),
+    canShare
+      ? el('button', { class: 'btn primary', onclick: () => navigator.share({ files: [file], title: content.forumTitle }).catch(() => {}) }, 'Share or save')
+      : el('a', { class: 'btn primary link-btn', href: lastPhoto.url, download: 'youth-speak-portal.jpg' }, 'Download'),
+    el('p', { class: 'muted' }, 'You can also press and hold the photo to save it.'),
+    el('button', { class: 'btn', onclick: closeSheet }, 'Back to the portal'),
+  );
 }
 
 // ---------------------------------------------------------------- animated logo
@@ -893,7 +1234,7 @@ function ensureModel() {
   modelState = 'loading';
   updateChrome();
   try {
-    worker = new Worker('pen-worker.js?v=11');
+    worker = new Worker('pen-worker.js?v=12');
   } catch (e) {
     console.warn('Hunt worker:', e);
     setModelState('error');
@@ -1191,6 +1532,8 @@ function updateChrome() {
         : 'Point the camera at the floor and move the phone slowly from side to side';
     } else if (tracking !== 'NORMAL') {
       hint = 'Lost track of the room: point at the floor or furniture and move slowly';
+    } else if (portalOpen) {
+      hint = 'Step back to see the whole portal, or have a friend stand in it and tap "Take photo"';
     } else if (!inView) {
       hint = 'Look around to find the agenda';
     } else if (!agendaOpen) {
@@ -1207,7 +1550,11 @@ function updateChrome() {
   $('#bar').hidden = !running || Boolean(currentSheet);
   $('#reticle').hidden = !running || placed || scanning || Boolean(currentSheet);
   $('#scan-frame').hidden = !running || !scanning || Boolean(currentSheet);
-  $('#btn-place').hidden = scanning;
+  $('#btn-place').hidden = scanning || portalOpen;
+  $('#btn-portal').hidden = !placed || scanning;
+  $('#btn-portal').textContent = portalOpen ? 'Close portal' : 'Portal';
+  $('#btn-photo').hidden = !portalOpen || scanning;
+  $('#btn-hunt').hidden = portalOpen;
   $('#btn-place').textContent = placed ? 'Move here' : 'Place here';
   $('#btn-place').disabled = !placed && !trackingReady();
   $('#btn-stop-scan').hidden = !scanning;
@@ -1229,6 +1576,8 @@ $('#xr').addEventListener('pointerup', (e) => {
   onStageTap(e.clientX, e.clientY);
 });
 $('#btn-hunt').addEventListener('click', openHunt);
+$('#btn-portal').addEventListener('click', togglePortal);
+$('#btn-photo').addEventListener('click', takePhoto);
 $('#btn-stop-scan').addEventListener('click', stopScanning);
 $('#app-version').textContent = APP_VERSION;
 
@@ -1241,9 +1590,21 @@ window.__ysf = {
   get state() {
     return { running, placed, tracking, ready: trackingReady(), inView, agendaOpen, logo: logo ? logo.phase : null, selectedSession,
       sheet: currentSheet, scanning, modelState, frames: renderedFrames, score: score(), found: foundMap(),
-      placedInfo, openT: Number(openT.toFixed(2)), briefT: Number(briefT.toFixed(2)) };
+      placedInfo, openT: Number(openT.toFixed(2)), briefT: Number(briefT.toFixed(2)),
+      portal: portalOpen, portalT: Number(portalT.toFixed(2)), portalBuilt: Boolean(portal),
+      photo: lastPhoto ? { bytes: lastPhoto.blob ? lastPhoto.blob.size : 0, length: lastPhoto.url.length } : null };
   },
+  togglePortal,
+  takePhoto,
   placeHere,
   screenPointOf,
   turn(radians) { if (placedGroup) placedGroup.rotation.y += radians; }, // lets a test look at the back
+  // Lets a test "step back": moves the agenda and the portal further away.
+  away(metres) {
+    for (const g of [placedGroup, portal && portal.group]) {
+      if (!g) continue;
+      const back = new THREE.Vector3(0, 0, -1).applyQuaternion(g.quaternion).multiplyScalar(metres);
+      g.position.add(back);
+    }
+  },
 };

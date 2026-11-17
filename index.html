@@ -11,13 +11,13 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
   <!--
     This product includes the XR Engine software developed by Niantic Spatial, Inc.
     Copyright (c) 2026 Niantic Spatial, Inc. All rights reserved.
     Licensed under the XR Engine License Agreement: lib/xr/LICENSE (includes the disclaimer of warranties).
   -->
-  <script src="lib/xr/xr.js?v=11" async data-preload-chunks="slam"></script>
+  <script src="lib/xr/xr.js?v=12" async data-preload-chunks="slam"></script>
   <script type="importmap">
     { "imports": { "three": "./lib/three/three.module.js"} }
   </script>
@@ -44,6 +44,8 @@
 
     <nav id="bar" class="bar" hidden>
       <button id="btn-place" class="primary">Place here</button>
+      <button id="btn-portal" hidden>Portal</button>
+      <button id="btn-photo" class="primary" hidden>Take photo</button>
       <button id="btn-stop-scan" hidden>Stop scanning</button>
       <button id="btn-hunt">Scavenger hunt</button>
     </nav>
@@ -53,6 +55,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=11"></script>
+  <script type="module" src="app.js?v=12"></script>
 </body>
 </html>

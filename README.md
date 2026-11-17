@@ -4,6 +4,8 @@ An AR agenda and scavenger hunt that runs in the phone's browser (Safari on iPho
 
 **The flow:** point at the floor for a few seconds, then aim at a wall and tap **Place here** → the Youth Speak logo animates in, pinned in that spot in the room, and keeps looping → tap the logo → the agenda opens → tap a session for its brief and directions. Walk around it, even behind it: it stays where you put it.
 
+**Portal:** once the logo is placed, tap **Portal** in the bottom bar. Rings in the Youth Speak colours burst out of the logo and form a tunnel in front of the wall, big enough to stand in. Step back to see all of it, or have a friend stand inside, then tap **Take photo** to save or share the picture (it gets a small Youth Speak strip at the bottom). **Close portal** folds it back into the logo. Opening the agenda also closes it.
+
 **Scavenger hunt:** point the camera at the real pen. An image model trained on your pen videos recognises it, and Penkala's panel appears.
 
 Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, free licence), 3D (three.js, MIT), object recognition (TensorFlow.js, Apache 2.0) and the Lato font (Open Font License). All of it is included in this folder.
@@ -12,7 +14,7 @@ Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, 
 
 1. If they are still there from older versions, delete `lib/mindar`, `markers`, `print`, `targets.mind` and `lib/three/addons` in your repository (… menu → Delete). They are no longer used.
 2. Click **Add file → Upload files**, select **everything inside this folder** (Cmd+A) and drag it in. Use Chrome so the folders upload too.
-3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v11**.
+3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v12**.
 
 The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first time.
 
@@ -28,6 +30,12 @@ The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first tim
 - Tracking is steadiest in good light with some objects in view (floor, furniture, doors). In a bare white corridor it can drift.
 - When placed, the agenda card fills about half the screen width (with the brief open, card and brief together fill the screen). Walk closer to read it. To make it bigger or smaller, change `FIT_WIDTH` near the top of `app.js` (0.5 = half the screen width).
 - If the banner says *Lost track of the room*, point at the floor or furniture and move slowly; the agenda comes back to its place.
+
+## Change the portal
+
+Near the middle of `app.js`, in the section *the portal*:
+- `RING_DESIGNS` lists the rings (front first): the pattern (`checker`, `flower`, `text`, `sunburst`, `logos`, `zigzag`, `stripes`, `dots`), the size of the hole, and two colours. `RING_PALETTE` holds the colours.
+- `PORTAL_FRONT_M` is how far the tunnel reaches out from the wall (metres); `PORTAL_CENTRE_M` is the height of its middle near you.
 
 ## The pen detector
 
