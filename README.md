@@ -2,9 +2,9 @@
 
 An AR agenda and scavenger hunt that runs in the phone's browser (Safari on iPhone, Chrome on Android). No app store, no fees.
 
-**The flow:** point at the floor for a few seconds, then aim at a wall and tap **Place here** → the Youth Speak logo animates in, pinned in that spot in the room, and keeps looping → tap the logo → the agenda opens → tap a session for its brief and directions. Walk around it, even behind it: it stays where you put it.
+**The flow:** point at the floor for a few seconds, then aim the dot where the wall meets the floor and tap **Place here** → the Youth Speak logo animates in, pinned in that spot in the room, and keeps looping → tap the logo → the agenda opens → tap a session for its brief and directions. Walk around it, even behind it: it stays where you put it.
 
-**Portal:** once the logo is placed, tap **Portal** in the bottom bar. Rings in the Youth Speak colours burst out of the logo and form a tunnel in front of the wall, big enough to stand in. Step back to see all of it, or have a friend stand inside, then tap **Take photo** to save or share the picture (it gets a small Youth Speak strip at the bottom). **Close portal** folds it back into the logo. Opening the agenda also closes it.
+**Portal:** once the logo is placed, tap **Portal** in the bottom bar. Rings in the Youth Speak colours burst out of the logo. Point the camera at a friend: the rings fly over and swirl around them, passing in front of and behind their body, and follow them as they move. Tap **Take photo** to save or share the picture (it gets a small Youth Speak strip at the bottom). If nobody is in view for about 1.5 seconds, the rings fly back to the wall. **Close portal** folds them back into the logo. Opening the agenda also closes it.
 
 **Scavenger hunt:** point the camera at the real pen. An image model trained on your pen videos recognises it, and Penkala's panel appears.
 
@@ -14,7 +14,7 @@ Everything is free: hosting (GitHub Pages), world tracking (8th Wall XR Engine, 
 
 1. If they are still there from older versions, delete `lib/mindar`, `markers`, `print`, `targets.mind` and `lib/three/addons` in your repository (… menu → Delete). They are no longer used.
 2. Click **Add file → Upload files**, select **everything inside this folder** (Cmd+A) and drag it in. Use Chrome so the folders upload too.
-3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v12**.
+3. Click **Commit changes**. Wait 1–2 minutes and reload the link on your phone. The start screen shows **Version v13**.
 
 The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first time.
 
@@ -22,11 +22,11 @@ The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first tim
 
 1. Open the link, tap **Start**, and allow the camera. On iPhone also tap **Allow** for motion access: the app needs it to track the room.
 2. **Point the camera at the floor** and move the phone slowly from side to side. The engine learns the room from the floor much better than from a plain wall. **Place here** stays greyed out until the tracking is steady (usually 2–5 seconds).
-3. When the banner says *Now aim at the wall*, stand about 1.5 m from the wall, aim the dot at it and tap **Place here**. The logo appears there.
+3. When the banner says *Aim the dot where the wall meets the floor*, tilt the phone down until the dot sits on the line between the floor and the wall. The label under the dot shows the distance (for example *wall at 2.3 m*) and the dot turns solid. Tap **Place here**: the logo appears on the wall at eye height, exactly at that distance, so it stays on the wall when you walk around.
 4. Tap the logo to open the agenda. Tap it again, or **Close agenda**, to fold it away. **Move here** places it somewhere else.
 
 **Good to know**
-- A plain white wall has nothing for the camera to measure, so the agenda is placed 1.5 m in front of you, not stuck exactly onto the wall surface. If the wall has some texture (a poster, a light switch, a door frame), the app measures the real distance.
+- Aiming at the bottom of the wall matters: the floor is what the camera measures best. If the agenda is placed at the wrong distance (in front of or behind the wall), it seems to slide over the wall when you move. If the label says *aim lower*, the dot is not on the floor yet; the app then falls back to points it can see on the wall, or 1.5 m.
 - Tracking is steadiest in good light with some objects in view (floor, furniture, doors). In a bare white corridor it can drift.
 - When placed, the agenda card fills about half the screen width (with the brief open, card and brief together fill the screen). Walk closer to read it. To make it bigger or smaller, change `FIT_WIDTH` near the top of `app.js` (0.5 = half the screen width).
 - If the banner says *Lost track of the room*, point at the floor or furniture and move slowly; the agenda comes back to its place.
@@ -36,6 +36,14 @@ The first visit downloads about 9 MB (the AR engine), so use Wi-Fi the first tim
 Near the middle of `app.js`, in the section *the portal*:
 - `RING_DESIGNS` lists the rings (front first): the pattern (`checker`, `flower`, `text`, `sunburst`, `logos`, `zigzag`, `stripes`, `dots`), the size of the hole, and two colours. `RING_PALETTE` holds the colours.
 - `PORTAL_FRONT_M` is how far the tunnel reaches out from the wall (metres); `PORTAL_CENTRE_M` is the height of its middle near you.
+
+## The person finder (portal)
+
+`person-model` holds MoveNet Lightning (Google, Apache License 2.0; TensorFlow.js version from the Human library's model collection, MIT). It finds the body points of one person (shoulders, hips, ankles...) a few times a second while the portal is open, and works out where they stand from their feet on the floor. It runs only on the phone: no picture is sent anywhere or stored. It loads when the portal opens (about 5 MB, a few seconds the first time).
+
+- It follows one person at a time. In a group, it picks whoever it sees most clearly.
+- Hiding the rings behind the person uses a simple body shape, so arms held far out are not covered.
+- `PERSON_RADIUS_M`, `PERSON_LOST_MS` and `ORBIT_IN_MS` in `app.js` set the body width, how long the rings wait before going back, and how fast they fly over.
 
 ## The pen detector
 
@@ -86,6 +94,7 @@ Export an `.mp4` (H.264, 16:9, under about 20 seconds and 10 MB), name it `hunt_
 | `videos/` | Hunt character videos |
 | `lib/xr/` | 8th Wall XR Engine (world tracking) and its licence – do not edit |
 | `pen-worker.js` | Runs the pen detector in the background so it never slows down the AR view |
+| `person-model/`, `person-worker.js` | The person finder for the portal (MoveNet), also in the background |
 | `lib/three/`, `lib/tf/` | three.js and TensorFlow.js – do not edit |
 | `manifest.webmanifest`, `icons/` | Lets people add the app to their home screen |
 
@@ -94,3 +103,5 @@ Export an `.mp4` (H.264, 16:9, under about 20 seconds and 10 MB), name it `hunt_
 This product includes the XR Engine software developed by Niantic Spatial, Inc. Copyright © 2026 Niantic Spatial, Inc. Licensed under the XR Engine License Agreement (`lib/xr/LICENSE`), which includes the disclaimer of warranties. The licence allows free use as part of a larger project like this one; keep this notice and the licence file with the app.
 
 The pen detector is built on MobileNetV2 from the ONNX Model Zoo (Apache License 2.0).
+
+The person finder is MoveNet SinglePose Lightning by Google (Apache License 2.0), converted for TensorFlow.js in @vladmandic/human-models (MIT).

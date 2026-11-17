@@ -11,13 +11,13 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=12">
+  <link rel="stylesheet" href="style.css?v=13">
   <!--
     This product includes the XR Engine software developed by Niantic Spatial, Inc.
     Copyright (c) 2026 Niantic Spatial, Inc. All rights reserved.
     Licensed under the XR Engine License Agreement: lib/xr/LICENSE (includes the disclaimer of warranties).
   -->
-  <script src="lib/xr/xr.js?v=12" async data-preload-chunks="slam"></script>
+  <script src="lib/xr/xr.js?v=13" async data-preload-chunks="slam"></script>
   <script type="importmap">
     { "imports": { "three": "./lib/three/three.module.js"} }
   </script>
@@ -26,7 +26,7 @@
   <canvas id="xr"></canvas>
 
   <div id="ui">
-    <div id="reticle" class="reticle" hidden><span></span></div>
+    <div id="reticle" class="reticle" hidden><span></span><em id="reticle-label"></em></div>
     <div id="scan-frame" class="scan-frame" hidden></div>
     <div id="banner" class="banner" hidden></div>
 
@@ -34,7 +34,7 @@
       <div class="screen-card">
         <img class="mark" src="logo/logo.png" alt="">
         <h1>Youth Speak AR</h1>
-        <p>First point the camera at the floor and move the phone slowly for a few seconds. Then aim at a wall about 1.5 m away and tap <strong>Place here</strong>. Tap the logo to open the agenda.</p>
+        <p>First point the camera at the floor and move the phone slowly for a few seconds. Then aim the dot where the wall meets the floor and tap <strong>Place here</strong>. Tap the logo to open the agenda.</p>
         <button id="btn-start" class="btn primary">Start</button>
         <p id="start-status" class="status"></p>
         <p class="status">Version <span id="app-version">?</span></p>
@@ -55,6 +55,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=12"></script>
+  <script type="module" src="app.js?v=13"></script>
 </body>
 </html>

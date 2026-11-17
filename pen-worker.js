@@ -2,7 +2,7 @@
 // It uses the processor (WebAssembly), not the graphics chip, so it never competes with the AR camera
 // and can never freeze the screen.
 /* global tf */
-importScripts('lib/tf/tf.min.js?v=12', 'lib/tf/tf-backend-wasm.min.js?v=12');
+importScripts('lib/tf/tf.min.js?v=13', 'lib/tf/tf-backend-wasm.min.js?v=13');
 
 let model = null;
 let size = 224;

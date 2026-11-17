@@ -1,7 +1,8 @@
 // Youth Speak AR - web app.
-// Flow: Start -> aim at a wall and tap "Place here" -> the logo animates in, pinned in the room, and loops
+// Flow: Start -> point at the floor, then aim where the wall meets the floor and tap "Place here" -> the logo animates in, pinned in the room, and loops
 //       -> tap the logo -> the agenda opens -> tap a session -> brief -> directions.
-//       Portal (bottom bar): rings burst out of the logo into a tunnel you can stand in; take a photo.
+//       Portal (bottom bar): rings burst out of the logo; when the camera sees a person they fly over and swirl
+//       around them (person-worker.js, MoveNet); take a photo.
 //       Scavenger hunt: point the camera at the real pen -> a trained image model recognises it -> claim points.
 //
 // World tracking: 8th Wall XR Engine (lib/xr). This product includes the XR Engine software developed by
@@ -13,7 +14,7 @@ import * as THREE from 'three';
 
 window.THREE = THREE; // the XR engine's three.js module looks for THREE here
 
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 
 // Size: when placed, the agenda card fills this share of the screen width (0.5 = half).
 // Larger = bigger agenda. With the brief open, card + brief together fill about twice this.
@@ -197,11 +198,13 @@ async function start() {
         logo.draw();
         updateStage();
         updateInView();
+        updateAimLabel();
       },
       onRender: () => {
         if (!xrCamera) return;
         renderedFrames++;
         if (photoWanted) capturePhoto();
+        if (personFinding) grabPersonFrame();
         if (scanning) grabScanFrame();
       },
       onException: (e) => {
@@ -577,17 +580,11 @@ function placeHere() {
   if (forward.lengthSq() < 1e-4) forward.set(0, 0, -1);
   forward.normalize();
 
-  // A plain wall has almost nothing to measure, so use a fixed distance unless the engine
-  // found real points on the wall straight ahead.
-  let distance = DEFAULT_DISTANCE_M;
-  try {
-    const hits = window.XR8.XrController.hitTest(0.5, 0.5, ['FEATURE_POINT']) || [];
-    const ahead = hits
-      .map((h) => Math.hypot(h.position.x - pos.x, h.position.z - pos.z))
-      .filter((d) => d > 0.6 && d < 4)
-      .sort((a, b) => a - b);
-    if (ahead.length) distance = ahead[0] - 0.03;
-  } catch { /* keep the fixed distance */ }
+  // How far the wall is. Best: the dot is on the line where the wall meets the floor, and the floor
+  // (which the engine tracks well) gives the exact distance. Then the agenda sits ON the wall and
+  // does not slide against it when you move. Otherwise: real points straight ahead, or 1.5 m.
+  const aim = wallDistance();
+  const distance = aim.distance;
 
   // How wide the screen is at that distance, from the camera's field of view.
   const e0 = xrCamera.projectionMatrix.elements[0] || 3.4;
@@ -599,7 +596,7 @@ function placeHere() {
   placedGroup.scale.setScalar(metresPerPx);
   placedGroup.updateMatrixWorld(true);
   placedGroup.visible = true;
-  placedInfo = { distance: Number(distance.toFixed(2)), cardWidthM: Number((CARD_BOX.w * metresPerPx).toFixed(2)) };
+  placedInfo = { distance: Number(distance.toFixed(2)), how: aim.how, cardWidthM: Number((CARD_BOX.w * metresPerPx).toFixed(2)) };
 
   placed = true;
   agendaOpen = false;
@@ -617,6 +614,40 @@ function placeHere() {
   updateChrome();
 }
 let placedInfo = null;
+
+const _aimRay = new THREE.Raycaster();
+const _centre = new THREE.Vector2(0, 0);
+function wallDistance() {
+  const pos = xrCamera.position;
+  xrCamera.updateMatrixWorld();
+  xrCamera.projectionMatrixInverse.copy(xrCamera.projectionMatrix).invert();
+  _aimRay.setFromCamera(_centre, xrCamera);
+  const ground = floorPoint(_aimRay.ray.origin, _aimRay.ray.direction);
+  if (ground) {
+    const d = Math.hypot(ground.x - pos.x, ground.z - pos.z);
+    if (d > 0.5 && d < 8) return { distance: d - 0.02, how: 'floor' };
+  }
+  try {
+    const hits = window.XR8.XrController.hitTest(0.5, 0.5, ['FEATURE_POINT']) || [];
+    const ahead = hits
+      .map((h) => Math.hypot(h.position.x - pos.x, h.position.z - pos.z))
+      .filter((d) => d > 0.6 && d < 6)
+      .sort((a, b) => a - b);
+    if (ahead.length) return { distance: ahead[0] - 0.03, how: 'points' };
+  } catch { /* fall back to the fixed distance */ }
+  return { distance: DEFAULT_DISTANCE_M, how: 'guess' };
+}
+
+// Before placing: show under the dot how far the wall is.
+let lastAimLabel = 0;
+function updateAimLabel() {
+  const label = $('#reticle-label');
+  if (!label || placed || !trackingReady() || Date.now() - lastAimLabel < 150) return;
+  lastAimLabel = Date.now();
+  const aim = wallDistance();
+  label.textContent = aim.how === 'floor' ? `wall at ${aim.distance.toFixed(1)} m` : 'aim lower: where the wall meets the floor';
+  $('#reticle').classList.toggle('locked', aim.how === 'floor');
+}
 
 // ---------------------------------------------------------------- tapping it
 
@@ -920,7 +951,7 @@ function drawRingTexture(design) {
 
 async function buildPortal(scene) {
   try { await logoStill.decode(); } catch { /* the logo ring falls back to dots */ }
-  const group = new THREE.Group();
+  const group = new THREE.Group(); // the rings live directly in the room
   group.visible = false;
   const rings = RING_DESIGNS.slice(0, PORTAL_RINGS).map((design, i) => {
     const tex = makeTexture(drawRingTexture(design));
@@ -930,13 +961,24 @@ async function buildPortal(scene) {
     );
     mesh.renderOrder = 3;
     group.add(mesh);
-    return { mesh, index: i, spin: (i % 2 ? -1 : 1) * (0.25 + ((i * 37) % 10) / 16), angle: i * 0.7 };
+    return { mesh, index: i, hole: design.hole, spin: (i % 2 ? -1 : 1) * (0.25 + ((i * 37) % 10) / 16), angle: i * 0.7 };
   });
-  scene.add(group);
-  portal = { group, rings };
+
+  // An invisible stand-in for the person's body. It hides the parts of the rings that pass behind them,
+  // so the rings look like they go around the person.
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(PERSON_RADIUS_M, 1, 6, 16),
+    new THREE.MeshBasicMaterial({ colorWrite: false }),
+  );
+  body.renderOrder = -1;
+  body.visible = false;
+
+  scene.add(group, body);
+  portal = { group, rings, body, wall: new THREE.Object3D(), logoHeight: 1.45 };
 }
 
 // The tunnel's shape: from the logo on the wall (small, high) out to you (big, at the height of a person).
+// Positions are in the wall's own frame: x along the wall, y = height above the floor, z = out from the wall.
 function ringTarget(i, n, logoHeight) {
   const t = n === 1 ? 1 : i / (n - 1);              // 0 = at the wall, 1 = nearest to you
   const front = n - 1 - i;                          // RING_DESIGNS is listed front first
@@ -955,16 +997,19 @@ function openPortal() {
   if (agendaOpen) closeAgenda();
   selectedSession = -1;
   // The tunnel starts at the logo and points out of the wall, towards where you placed it from.
-  portal.group.position.set(placedGroup.position.x, 0, placedGroup.position.z);
-  portal.group.rotation.set(0, placedGroup.rotation.y, 0);
+  portal.wall.position.set(placedGroup.position.x, 0, placedGroup.position.z);
+  portal.wall.rotation.set(0, placedGroup.rotation.y, 0);
+  portal.wall.updateMatrixWorld(true);
   portal.logoHeight = placedGroup.position.y;
   portal.group.visible = true;
   portalOpen = true;
+  startPersonFinder();
   updateChrome();
 }
 
 function closePortal() {
   portalOpen = false;
+  stopPersonFinder();
   updateChrome();
 }
 
@@ -972,27 +1017,89 @@ function togglePortal() {
   if (portalOpen) closePortal(); else openPortal();
 }
 
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler();
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+const AXIS_X = new THREE.Vector3(1, 0, 0), AXIS_Y = new THREE.Vector3(0, 1, 0), AXIS_Z = new THREE.Vector3(0, 0, 1);
+
+// Where each ring sits in the tunnel (world position + rotation).
+function tunnelPose(ring, e, out) {
+  const n = portal.rings.length;
+  const order = n - 1 - ring.index;
+  const goal = ringTarget(order, n, portal.logoHeight);
+  const sway = Math.sin(performance.now() / 900 + ring.index) * 0.06;
+  _v.set(goal.x * e, mix(portal.logoHeight, goal.y, e), mix(0.03, goal.z, e));
+  out.pos.copy(portal.wall.localToWorld(_v));
+  _e.set((goal.tiltX + sway) * e, (goal.tiltY - sway) * e, ring.angle);
+  out.quat.copy(portal.wall.quaternion).multiply(_q.setFromEuler(_e));
+  out.size = goal.size;
+}
+
+// Where each ring sits around the person: hoops at different heights that tilt, wobble and circle around them.
+function orbitPose(ring, now, out) {
+  const n = portal.rings.length;
+  const k = ring.index;
+  const h = person.height;
+  const t = now / 1000;
+  const base = 0.2 + (k / (n - 1)) * (h - 0.15);
+  const y = Math.min(h + 0.15, Math.max(0.08, base + Math.sin(t * 1.1 + k * 0.8) * 0.16));
+  out.pos.set(person.pos.x, y, person.pos.z);
+  // Hoop size: the hole must be wider than the body.
+  const outer = Math.max(0.95, (PERSON_RADIUS_M + 0.12) * 2 / ring.hole) + (k % 3) * 0.12;
+  out.size = outer;
+  const precess = t * (0.5 + (k % 4) * 0.12) * (k % 2 ? -1 : 1) + k * 1.3;
+  const tilt = 0.28 + 0.14 * Math.sin(t * 0.8 + k);
+  out.quat.setFromAxisAngle(AXIS_Y, precess)
+    .multiply(_q.setFromAxisAngle(AXIS_X, tilt))
+    .multiply(_q2.setFromAxisAngle(AXIS_X, -Math.PI / 2))
+    .multiply(_q.setFromAxisAngle(AXIS_Z, ring.angle));
+}
+
+const poseA = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), size: 1 };
+const poseB = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), size: 1 };
+
 function updatePortal(dt) {
   if (!portal) return;
-  const before = portalT;
+  const now = performance.now();
   portalT = Math.min(1, Math.max(0, portalT + (portalOpen ? dt / PORTAL_OPEN_MS : -dt / PORTAL_CLOSE_MS)));
+  updatePerson(dt, now);
+  const wantOrbit = portalOpen && person.found;
+  orbitT = Math.min(1, Math.max(0, orbitT + (wantOrbit ? dt / ORBIT_IN_MS : -dt / ORBIT_OUT_MS)));
+
+  portal.body.visible = portalT > 0 && orbitT > 0.3 && person.found;
+  if (portal.body.visible) {
+    portal.body.position.set(person.pos.x, person.height / 2, person.pos.z);
+    portal.body.scale.set(1, person.height / (1 + 2 * PERSON_RADIUS_M), 1);
+  }
+
   if (portalT === 0) {
-    if (before !== 0 || portal.group.visible) portal.group.visible = false;
+    portal.group.visible = false;
     return;
   }
+  portal.group.visible = true;
   const n = portal.rings.length;
   for (const ring of portal.rings) {
     // Rings are listed front first; the ones nearest the wall come out first.
     const order = n - 1 - ring.index;
-    const goal = ringTarget(order, n, portal.logoHeight);
     const delay = (order / n) * 0.45;
     const local = Math.min(1, Math.max(0, (portalT - delay) / (1 - delay)));
     const e = portalOpen ? easeOutBack(local) : ease(local);
-    ring.angle += (ring.spin * dt) / 1000 * (1 + (1 - local) * 6); // spins fast while bursting out
-    ring.mesh.position.set(goal.x * e, mix(portal.logoHeight, goal.y, e), mix(0.03, goal.z, e));
-    const sway = Math.sin(performance.now() / 900 + ring.index) * 0.06;
-    ring.mesh.rotation.set((goal.tiltX + sway) * e, (goal.tiltY - sway) * e, ring.angle);
-    const s = Math.max(0.001, goal.size * mix(0.12, 1, e));
+    ring.angle += (ring.spin * dt) / 1000 * (1 + (1 - local) * 6 + orbitT * 1.5); // spin faster while flying and swirling
+
+    tunnelPose(ring, e, poseA);
+    let pos = poseA.pos, quat = poseA.quat, size = poseA.size;
+    if (orbitT > 0) {
+      orbitPose(ring, now, poseB);
+      // Each ring leaves at a slightly different moment, and flies in an arc.
+      const stagger = (ring.index / n) * 0.35;
+      const f = ease(Math.min(1, Math.max(0, (orbitT - stagger) / (1 - stagger))));
+      pos = _v2.copy(poseA.pos).lerp(poseB.pos, f);
+      pos.y += Math.sin(Math.PI * f) * 0.35;
+      quat = _q2.copy(poseA.quat).slerp(poseB.quat, f);
+      size = mix(poseA.size, poseB.size, f);
+    }
+    ring.mesh.position.copy(pos);
+    ring.mesh.quaternion.copy(quat);
+    const s = Math.max(0.001, size * mix(0.12, 1, Math.max(e, orbitT)));
     ring.mesh.scale.set(s, s, 1);
     ring.mesh.material.opacity = Math.min(1, local * 3);
     ring.mesh.visible = local > 0;
@@ -1003,6 +1110,171 @@ function easeOutBack(t) {
   const k = 1.4;
   const u = t - 1;
   return 1 + (k + 1) * u * u * u + k * u * u;
+}
+
+// ---------------------------------------------------------------- finding a person for the portal
+// While the portal is open, a few times a second the camera picture goes to a body-point model
+// (MoveNet, person-worker.js). When it sees a person, the rings fly over and swirl around them,
+// and follow them as they move. Where the person stands is worked out from their feet on the floor
+// (or, if the feet are out of the picture, from how wide their shoulders look).
+
+const PERSON_RADIUS_M = 0.19;      // the body stand-in that hides ring parts behind the person
+const PERSON_EVERY_MS = 110;
+const PERSON_LOST_MS = 1500;       // rings go back to the wall after this long without seeing anyone
+const ORBIT_IN_MS = 1300, ORBIT_OUT_MS = 1100;
+const SHOULDER_WIDTH_M = 0.38;
+const KP = { nose: 0, lShoulder: 5, rShoulder: 6, lHip: 11, rHip: 12, lAnkle: 15, rAnkle: 16 };
+
+const person = {
+  found: false, lastSeen: 0, pos: new THREE.Vector3(), target: new THREE.Vector3(),
+  height: 1.7, targetHeight: 1.7, score: 0, ms: 0, how: '', screen: null,
+};
+let orbitT = 0;
+let personWorker = null;
+let personState = 'none'; // none | loading | ready | error
+let personFinding = false;
+let personBusy = false;
+let personBusySince = 0;
+let personLastGrab = 0;
+let personScratch = null;
+let personRequest = null;   // camera + picture layout at the moment the picture was taken
+let personRequestId = 0;
+
+function startPersonFinder() {
+  personFinding = true;
+  if (personState === 'none' || personState === 'error') loadPersonFinder();
+}
+
+function stopPersonFinder() {
+  personFinding = false;
+  person.found = false;
+}
+
+function loadPersonFinder() {
+  if (personWorker) personWorker.terminate();
+  personState = 'loading';
+  try {
+    personWorker = new Worker('person-worker.js?v=13');
+  } catch (e) {
+    console.warn('Person finder:', e);
+    personState = 'error';
+    return;
+  }
+  personWorker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === 'ready') { personState = 'ready'; updateChrome(); }
+    else if (msg.type === 'error') {
+      console.warn('Person finder:', msg.message);
+      personBusy = false;
+      if (msg.during !== 'detect') { personState = 'error'; updateChrome(); }
+    } else if (msg.type === 'pose') {
+      personBusy = false;
+      handlePose(msg);
+    }
+  };
+  personWorker.onerror = (e) => { console.warn('Person worker error:', e.message); personState = 'error'; updateChrome(); };
+  personWorker.postMessage({ type: 'load', base: new URL('person-model/', location.href).href, wasmBase: new URL('lib/tf/', location.href).href });
+}
+
+// The whole camera picture as shown on screen, fitted into the model's 192 x 192 square.
+function grabPersonFrame() {
+  const now = Date.now();
+  if (personBusy && now - personBusySince > 3000) personBusy = false;
+  if (!personFinding || personState !== 'ready' || personBusy || now - personLastGrab < PERSON_EVERY_MS) return;
+  const v = cameraVideo;
+  if (!v || v.readyState < 2 || !v.videoWidth || !xrCamera) return;
+  personLastGrab = now;
+  const W = window.innerWidth, H = window.innerHeight, vw = v.videoWidth, vh = v.videoHeight;
+  const scale = Math.max(W / vw, H / vh);
+  const sw = W / scale, sh = H / scale;           // the part of the video that is on screen
+  const S = 192, fit = S / Math.max(sw, sh);
+  const dw = sw * fit, dh = sh * fit, ox = (S - dw) / 2, oy = (S - dh) / 2;
+  if (!personScratch) { personScratch = document.createElement('canvas'); personScratch.width = personScratch.height = S; }
+  const ctx = personScratch.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, S, S);
+  ctx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, ox, oy, dw, dh);
+  const pixels = ctx.getImageData(0, 0, S, S).data.buffer;
+  xrCamera.updateMatrixWorld();
+  personRequest = {
+    id: ++personRequestId, ox, oy, dw, dh, S,
+    world: xrCamera.matrixWorld.clone(),
+    projInv: xrCamera.projectionMatrix.clone().invert(),
+    camPos: new THREE.Vector3().setFromMatrixPosition(xrCamera.matrixWorld),
+  };
+  personBusy = true;
+  personBusySince = now;
+  personWorker.postMessage({ type: 'detect', pixels, id: personRequest.id }, [pixels]);
+}
+
+// A body point (model coordinates) -> a ray from the camera into the room, as the camera was when the picture was taken.
+function pointRay(req, points, index) {
+  const y = points[index * 3] * req.S, x = points[index * 3 + 1] * req.S;
+  const nx = ((x - req.ox) / req.dw) * 2 - 1, ny = -(((y - req.oy) / req.dh) * 2 - 1);
+  const p = new THREE.Vector3(nx, ny, 0.5).applyMatrix4(req.projInv).applyMatrix4(req.world);
+  return { dir: p.sub(req.camPos).normalize(), score: points[index * 3 + 2], sx: (nx + 1) / 2, sy: (1 - ny) / 2 };
+}
+
+function floorPoint(origin, dir, floorY = 0) {
+  if (dir.y > -0.02) return null;
+  const t = (floorY - origin.y) / dir.y;
+  return t > 0 ? origin.clone().addScaledVector(dir, t) : null;
+}
+
+function handlePose({ points, id, ms }) {
+  const req = personRequest;
+  if (!req || req.id !== id || !personFinding) return;
+  person.ms = ms;
+  const r = (k) => pointRay(req, points, k);
+  const ls = r(KP.lShoulder), rs = r(KP.rShoulder), lh = r(KP.lHip), rh = r(KP.rHip);
+  const torso = (ls.score + rs.score + lh.score + rh.score) / 4;
+  person.score = torso;
+  window.__lastPose = { torso: Number(torso.toFixed(2)), ms };
+  if (torso < 0.3 || ls.score < 0.25 || rs.score < 0.25) return; // no clear person in view
+
+  const cam = req.camPos;
+  const la = r(KP.lAnkle), ra = r(KP.rAnkle), nose = r(KP.nose);
+  const feet = [la, ra].filter((a) => a.score > 0.3);
+  let ground = null;
+  if (feet.length) {
+    const dir = feet.reduce((acc, a) => acc.add(a.dir), new THREE.Vector3()).normalize();
+    ground = floorPoint(cam, dir);
+    if (ground && Math.hypot(ground.x - cam.x, ground.z - cam.z) > 12) ground = null;
+  }
+  let how = 'feet';
+  if (!ground) {
+    // Feet not visible: judge the distance by how wide the shoulders look.
+    how = 'shoulders';
+    const angle = ls.dir.angleTo(rs.dir);
+    const dist = Math.min(8, Math.max(0.6, SHOULDER_WIDTH_M / Math.max(angle, 0.01)));
+    const mid = ls.dir.clone().add(rs.dir).normalize();
+    const p = cam.clone().addScaledVector(mid, dist);
+    ground = new THREE.Vector3(p.x, 0, p.z);
+  }
+  // Height: where the nose ray passes above the spot the person stands on.
+  let height = 1.7;
+  if (how === 'feet' && nose.score > 0.3) {
+    const horiz = Math.hypot(ground.x - cam.x, ground.z - cam.z);
+    const dh = Math.hypot(nose.dir.x, nose.dir.z);
+    if (dh > 0.05) height = Math.min(2.1, Math.max(1.0, cam.y + nose.dir.y * (horiz / dh) + 0.12));
+  }
+
+  person.target.set(ground.x, 0, ground.z);
+  person.targetHeight = height;
+  if (!person.found) { person.pos.copy(person.target); person.height = height; }
+  person.found = true;
+  person.lastSeen = performance.now();
+  person.how = how;
+  person.screen = { x: Number(((ls.sx + rs.sx) / 2).toFixed(2)), y: Number(((ls.sy + lh.sy) / 2).toFixed(2)) };
+  updateChrome();
+}
+
+function updatePerson(dt, now) {
+  if (person.found && now - person.lastSeen > PERSON_LOST_MS) { person.found = false; updateChrome(); }
+  if (!person.found) return;
+  const f = 1 - Math.exp(-dt / 180); // glide towards the newest position, so the rings move smoothly
+  person.pos.lerp(person.target, f);
+  person.height += (person.targetHeight - person.height) * f;
 }
 
 // ---------------------------------------------------------------- taking a photo
@@ -1234,7 +1506,7 @@ function ensureModel() {
   modelState = 'loading';
   updateChrome();
   try {
-    worker = new Worker('pen-worker.js?v=12');
+    worker = new Worker('pen-worker.js?v=13');
   } catch (e) {
     console.warn('Hunt worker:', e);
     setModelState('error');
@@ -1528,12 +1800,14 @@ function updateChrome() {
         : 'Point the camera at the hidden object';
     } else if (!placed) {
       hint = trackingReady()
-        ? 'Now aim at the wall, about 1.5 m away, and tap "Place here"'
+        ? 'Aim the dot where the wall meets the floor, then tap "Place here"'
         : 'Point the camera at the floor and move the phone slowly from side to side';
     } else if (tracking !== 'NORMAL') {
       hint = 'Lost track of the room: point at the floor or furniture and move slowly';
     } else if (portalOpen) {
-      hint = 'Step back to see the whole portal, or have a friend stand in it and tap "Take photo"';
+      hint = person.found ? 'The rings found someone! Tap "Take photo"'
+        : personState === 'loading' ? 'Getting the portal ready... (a few seconds the first time)'
+        : 'Point the camera at a friend: the rings will fly over and swirl around them';
     } else if (!inView) {
       hint = 'Look around to find the agenda';
     } else if (!agendaOpen) {
@@ -1592,6 +1866,9 @@ window.__ysf = {
       sheet: currentSheet, scanning, modelState, frames: renderedFrames, score: score(), found: foundMap(),
       placedInfo, openT: Number(openT.toFixed(2)), briefT: Number(briefT.toFixed(2)),
       portal: portalOpen, portalT: Number(portalT.toFixed(2)), portalBuilt: Boolean(portal),
+      orbitT: Number(orbitT.toFixed(2)), personState,
+      person: { found: person.found, how: person.how, score: Number(person.score.toFixed(2)), ms: person.ms, screen: person.screen,
+        pos: person.pos.toArray().map((n) => Number(n.toFixed(2))), height: Number(person.height.toFixed(2)) },
       photo: lastPhoto ? { bytes: lastPhoto.blob ? lastPhoto.blob.size : 0, length: lastPhoto.url.length } : null };
   },
   togglePortal,
